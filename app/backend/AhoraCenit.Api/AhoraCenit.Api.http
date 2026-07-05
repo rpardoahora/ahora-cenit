@@ -1,0 +1,11 @@
+@AhoraCenit.Api_HostAddress = http://localhost:5271
+
+GET {{AhoraCenit.Api_HostAddress}}/health
+Accept: application/json
+
+###
+
+GET {{AhoraCenit.Api_HostAddress}}/api/products
+Accept: application/json
+
+###

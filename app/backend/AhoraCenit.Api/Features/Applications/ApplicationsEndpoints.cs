@@ -1,0 +1,379 @@
+using System.Security.Claims;
+using System.Text.Json;
+using AhoraCenit.Api.Contracts.Applications;
+using AhoraCenit.Api.Data;
+using AhoraCenit.Api.Features.Products;
+using AhoraCenit.Api.Services;
+using Microsoft.EntityFrameworkCore;
+
+namespace AhoraCenit.Api.Features.Applications;
+
+public static class ApplicationsEndpoints
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public static RouteGroupBuilder MapApplicationsEndpoints(this RouteGroupBuilder group)
+    {
+        group.RequireAuthorization();
+
+        group.MapPost("/", CreateAsync);
+        group.MapGet("/", ListAsync);
+        group.MapGet("/{id:guid}", GetByIdAsync);
+        group.MapGet("/{id:guid}/status", RefreshStatusAsync);
+        group.MapPost("/{id:guid}/stop", StopAsync);
+        group.MapPost("/{id:guid}/start", StartAsync);
+        group.MapDelete("/{id:guid}", DeleteAsync);
+
+        return group;
+    }
+
+    private static bool CanAccess(ClaimsPrincipal principal, Guid ownerUserId) =>
+        principal.IsAdmin() || principal.GetUserId() == ownerUserId;
+
+    private static async Task<IResult> CreateAsync(
+        CreateApplicationRequest request,
+        ClaimsPrincipal principal,
+        AppDbContext db,
+        IPortainerClient portainerClient,
+        IConfiguration configuration,
+        CancellationToken ct)
+    {
+        var userId = principal.GetUserId();
+        var user = await db.Users.FindAsync([userId], ct);
+        if (user is null)
+        {
+            return Results.Unauthorized();
+        }
+
+        var product = await db.Products.FindAsync([request.ProductId], ct);
+        if (product is null || !product.IsActive)
+        {
+            return Results.BadRequest(new { message = "El producto no existe o no está activo." });
+        }
+
+        // Resolve the subdomain slug: user-provided if present, otherwise the
+        // default combination of product name + client name.
+        var requestedSlugSource = string.IsNullOrWhiteSpace(request.Subdomain)
+            ? SlugGenerator.Slugify(product.Name, user.Name)
+            : SlugGenerator.Slugify(request.Subdomain);
+
+        if (string.IsNullOrEmpty(requestedSlugSource))
+        {
+            requestedSlugSource = SlugGenerator.Slugify(product.Name, user.ClientSlug);
+        }
+
+        var subdomain = await SlugGenerator.ResolveUniqueAsync(
+            requestedSlugSource,
+            slug => db.Applications.AnyAsync(a => a.Subdomain == slug, ct));
+
+        // Merge product schema defaults with the user's overrides.
+        var schema = ProductsEndpoints.DeserializeSchema(product.EnvVarsSchemaJson);
+        var mergedEnvVars = schema.ToDictionary(d => d.Key, d => d.DefaultValue);
+
+        if (request.EnvVars is not null)
+        {
+            foreach (var (key, value) in request.EnvVars)
+            {
+                mergedEnvVars[key] = value;
+            }
+        }
+
+        var application = new Application
+        {
+            ProductId = product.Id,
+            UserId = user.Id,
+            Subdomain = subdomain,
+            EnvVarValuesJson = JsonSerializer.Serialize(mergedEnvVars, JsonOptions),
+            Status = ApplicationStatus.Deploying,
+            PortainerEndpointId = configuration.GetValue<int>("Portainer:EndpointId", 1),
+            Product = product,
+            User = user
+        };
+
+        db.Applications.Add(application);
+        await db.SaveChangesAsync(ct);
+
+        var baseDomain = configuration["BaseDomain"] ?? "ahoracenit.localhost";
+
+        var portainerEnvVars = new Dictionary<string, string>(mergedEnvVars)
+        {
+            ["APP_SUBDOMAIN"] = subdomain,
+            ["BASE_DOMAIN"] = baseDomain
+        };
+
+        // A partir de aquí usamos CancellationToken.None a propósito: el despliegue en
+        // Portainer (pull de imagen incluido) puede tardar más que la conexión HTTP del
+        // cliente. Si se cancela con el ct de la petición, el stack se crea igualmente en
+        // Portainer pero la aplicación queda huérfana en BBDD como "Deploying" para siempre.
+        var result = await portainerClient.CreateStackAsync(
+            stackName: subdomain,
+            composeContent: product.ComposeTemplate,
+            envVars: portainerEnvVars,
+            ct: CancellationToken.None);
+
+        if (result.Success)
+        {
+            application.PortainerStackId = result.StackId;
+            application.PortainerEndpointId = result.EndpointId;
+            application.Status = ApplicationStatus.Running;
+            application.UpdatedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync(CancellationToken.None);
+
+            return Results.Created($"/api/applications/{application.Id}", ToResponse(application, baseDomain));
+        }
+
+        application.Status = ApplicationStatus.Error;
+        application.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync(CancellationToken.None);
+
+        return Results.Json(
+            new
+            {
+                message = "No se pudo desplegar la aplicación en Portainer.",
+                error = result.ErrorMessage,
+                application = ToResponse(application, baseDomain)
+            },
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+
+    private static async Task<IResult> ListAsync(
+        ClaimsPrincipal principal,
+        AppDbContext db,
+        IConfiguration configuration,
+        Guid? userId,
+        string? clientSlug,
+        CancellationToken ct)
+    {
+        var query = db.Applications.Include(a => a.Product).Include(a => a.User).AsQueryable();
+
+        if (principal.IsAdmin())
+        {
+            if (userId.HasValue)
+            {
+                query = query.Where(a => a.UserId == userId.Value);
+            }
+
+            if (!string.IsNullOrWhiteSpace(clientSlug))
+            {
+                query = query.Where(a => a.User!.ClientSlug == clientSlug);
+            }
+        }
+        else
+        {
+            var currentUserId = principal.GetUserId();
+            query = query.Where(a => a.UserId == currentUserId);
+        }
+
+        var baseDomain = GetBaseDomain(configuration);
+        var applications = await query.OrderByDescending(a => a.CreatedAt).ToListAsync(ct);
+        return Results.Ok(applications.Select(a => ToResponse(a, baseDomain)));
+    }
+
+    private static async Task<IResult> GetByIdAsync(
+        Guid id,
+        ClaimsPrincipal principal,
+        AppDbContext db,
+        IConfiguration configuration,
+        CancellationToken ct)
+    {
+        var application = await db.Applications
+            .Include(a => a.Product)
+            .Include(a => a.User)
+            .FirstOrDefaultAsync(a => a.Id == id, ct);
+
+        if (application is null)
+        {
+            return Results.NotFound();
+        }
+
+        if (!CanAccess(principal, application.UserId))
+        {
+            return Results.Forbid();
+        }
+
+        return Results.Ok(ToResponse(application, GetBaseDomain(configuration)));
+    }
+
+    private static async Task<IResult> RefreshStatusAsync(
+        Guid id,
+        ClaimsPrincipal principal,
+        AppDbContext db,
+        IPortainerClient portainerClient,
+        IConfiguration configuration,
+        CancellationToken ct)
+    {
+        var application = await db.Applications
+            .Include(a => a.Product)
+            .Include(a => a.User)
+            .FirstOrDefaultAsync(a => a.Id == id, ct);
+
+        if (application is null)
+        {
+            return Results.NotFound();
+        }
+
+        if (!CanAccess(principal, application.UserId))
+        {
+            return Results.Forbid();
+        }
+
+        var baseDomain = GetBaseDomain(configuration);
+
+        if (application.PortainerStackId is null)
+        {
+            return Results.Ok(ToResponse(application, baseDomain));
+        }
+
+        var status = await portainerClient.GetStackStatusAsync(
+            application.PortainerStackId.Value,
+            application.PortainerEndpointId,
+            ct);
+
+        application.Status = status;
+        application.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+
+        return Results.Ok(ToResponse(application, baseDomain));
+    }
+
+    private static async Task<IResult> StopAsync(
+        Guid id,
+        ClaimsPrincipal principal,
+        AppDbContext db,
+        IPortainerClient portainerClient,
+        IConfiguration configuration,
+        CancellationToken ct)
+    {
+        var application = await db.Applications
+            .Include(a => a.Product)
+            .Include(a => a.User)
+            .FirstOrDefaultAsync(a => a.Id == id, ct);
+
+        if (application is null)
+        {
+            return Results.NotFound();
+        }
+
+        if (!CanAccess(principal, application.UserId))
+        {
+            return Results.Forbid();
+        }
+
+        if (application.PortainerStackId is null)
+        {
+            return Results.BadRequest(new { message = "La aplicación no tiene un stack asociado en Portainer." });
+        }
+
+        var result = await portainerClient.StopStackAsync(application.PortainerStackId.Value, application.PortainerEndpointId, ct);
+        if (!result.Success)
+        {
+            return Results.Json(new { message = "No se pudo parar la aplicación.", error = result.ErrorMessage }, statusCode: StatusCodes.Status502BadGateway);
+        }
+
+        application.Status = ApplicationStatus.Stopped;
+        application.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+
+        return Results.Ok(ToResponse(application, GetBaseDomain(configuration)));
+    }
+
+    private static async Task<IResult> StartAsync(
+        Guid id,
+        ClaimsPrincipal principal,
+        AppDbContext db,
+        IPortainerClient portainerClient,
+        IConfiguration configuration,
+        CancellationToken ct)
+    {
+        var application = await db.Applications
+            .Include(a => a.Product)
+            .Include(a => a.User)
+            .FirstOrDefaultAsync(a => a.Id == id, ct);
+
+        if (application is null)
+        {
+            return Results.NotFound();
+        }
+
+        if (!CanAccess(principal, application.UserId))
+        {
+            return Results.Forbid();
+        }
+
+        if (application.PortainerStackId is null)
+        {
+            return Results.BadRequest(new { message = "La aplicación no tiene un stack asociado en Portainer." });
+        }
+
+        var result = await portainerClient.StartStackAsync(application.PortainerStackId.Value, application.PortainerEndpointId, ct);
+        if (!result.Success)
+        {
+            return Results.Json(new { message = "No se pudo iniciar la aplicación.", error = result.ErrorMessage }, statusCode: StatusCodes.Status502BadGateway);
+        }
+
+        application.Status = ApplicationStatus.Running;
+        application.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+
+        return Results.Ok(ToResponse(application, GetBaseDomain(configuration)));
+    }
+
+    private static async Task<IResult> DeleteAsync(
+        Guid id,
+        ClaimsPrincipal principal,
+        AppDbContext db,
+        IPortainerClient portainerClient,
+        CancellationToken ct)
+    {
+        var application = await db.Applications.FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (application is null)
+        {
+            return Results.NotFound();
+        }
+
+        if (!CanAccess(principal, application.UserId))
+        {
+            return Results.Forbid();
+        }
+
+        if (application.PortainerStackId is not null)
+        {
+            var result = await portainerClient.DeleteStackAsync(application.PortainerStackId.Value, application.PortainerEndpointId, ct);
+            if (!result.Success)
+            {
+                return Results.Json(new { message = "No se pudo borrar el stack en Portainer.", error = result.ErrorMessage }, statusCode: StatusCodes.Status502BadGateway);
+            }
+        }
+
+        db.Applications.Remove(application);
+        await db.SaveChangesAsync(ct);
+
+        return Results.NoContent();
+    }
+
+    private static string GetBaseDomain(IConfiguration configuration) =>
+        configuration["BaseDomain"] ?? "ahoracenit.localhost";
+
+    private static ApplicationResponse ToResponse(Application application, string baseDomain)
+    {
+        var envVars = string.IsNullOrWhiteSpace(application.EnvVarValuesJson)
+            ? new Dictionary<string, string>()
+            : JsonSerializer.Deserialize<Dictionary<string, string>>(application.EnvVarValuesJson, JsonOptions) ?? new();
+
+        return new ApplicationResponse(
+            application.Id,
+            application.ProductId,
+            application.Product?.Name ?? string.Empty,
+            application.UserId,
+            application.User?.Name ?? string.Empty,
+            application.User?.ClientSlug ?? string.Empty,
+            application.Subdomain,
+            $"{application.Subdomain}.{baseDomain}",
+            envVars,
+            application.Status.ToString(),
+            application.PortainerStackId,
+            application.PortainerEndpointId,
+            application.CreatedAt,
+            application.UpdatedAt);
+    }
+}

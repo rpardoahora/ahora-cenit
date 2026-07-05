@@ -1,0 +1,65 @@
+networks:
+  proxy:
+    name: proxy
+    external: true
+  cenit_internal:
+    name: cenit_internal
+
+volumes:
+  cenit_sqlserver_data:
+    name: cenit_sqlserver_data
+
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: sqlserver
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${DB_SA_PASSWORD}
+    volumes:
+      - cenit_sqlserver_data:/var/opt/mssql
+    networks:
+      - cenit_internal
+    ports:
+      - "1433:1433" # acceso directo con herramientas SQL en dev
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: app
+    restart: unless-stopped
+    depends_on:
+      - sqlserver
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__Default: Server=sqlserver,1433;Database=AhoraCenit;User Id=sa;Password=${DB_SA_PASSWORD};TrustServerCertificate=True
+      Jwt__Secret: ${JWT_SECRET}
+      Jwt__Issuer: ahora-cenit
+      Jwt__ExpiresMinutes: "480"
+      Portainer__Url: ${PORTAINER_URL}
+      Portainer__ApiKey: ${PORTAINER_API_KEY}
+      Portainer__EndpointId: ${PORTAINER_ENDPOINT_ID}
+      BaseDomain: ${DOMAIN}
+      AdminSeed__Email: ${ADMIN_EMAIL}
+      AdminSeed__Password: ${ADMIN_PASSWORD}
+      Auth__RequireEmailConfirmation: ${REQUIRE_EMAIL_CONFIRMATION}
+      Auth__PublicBaseUrl: ${PUBLIC_BASE_URL}
+      Smtp__Host: ${SMTP_HOST}
+      Smtp__Port: ${SMTP_PORT}
+      Smtp__User: ${SMTP_USER}
+      Smtp__Password: ${SMTP_PASSWORD}
+      Smtp__From: ${SMTP_FROM}
+    networks:
+      - cenit_internal
+      - proxy
+    ports:
+      - "8081:8080" # acceso directo sin pasar por Traefik, útil en dev (8080 lo usa el dashboard de Traefik)
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.services.app.loadbalancer.server.port=8080
+      - traefik.http.routers.app.rule=Host(`${DOMAIN}`)
+      - traefik.http.routers.app.entrypoints=web
