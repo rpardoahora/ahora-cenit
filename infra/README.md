@@ -40,6 +40,21 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 - Portainer: https://portainer.ahoracenit.com
 - Dashboard Traefik (con auth): https://traefik.ahoracenit.com
 
+## Desplegar ahora-cenit desde la imagen de GitHub Actions
+
+Cada push a `main` (o tag `v*`) construye y publica la imagen de la app en
+`ghcr.io/rpardoahora/ahora-cenit` (ver `.github/workflows/docker-build.yml`).
+`docker-compose-cenit.yml` levanta ese stack (sqlserver + app) usando esa
+imagen ya construida, sin necesitar el código fuente en el host:
+
+```bash
+docker compose --env-file .env.prod -f docker-compose-cenit.yml pull
+docker compose --env-file .env.prod -f docker-compose-cenit.yml up -d
+```
+
+Necesita las mismas variables que `app/.env.prod.example` y que ya exista
+la red `proxy` (creada al levantar `docker-compose.prod.yml`).
+
 ## Variables reservadas para stacks de producto
 
 Cuando ahora-cenit despliega el compose de un producto vía la API de
