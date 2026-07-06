@@ -1,14 +1,17 @@
 import { toast } from "sonner"
 import type {
+  AdminUser,
   Application,
   ApplicationStatus,
   AuthResponse,
   CreateApplicationInput,
+  CreateUserInput,
   DeploySuggestion,
   MessageResponse,
   Product,
   ProductInput,
   RegisterResult,
+  UpdateUserInput,
   User,
 } from "@/types"
 
@@ -141,14 +144,32 @@ export const productsApi = {
     }),
 }
 
+// ---------- Users (admin) ----------
+
+export const usersApi = {
+  list: () => request<AdminUser[]>("/users"),
+  get: (id: string) => request<AdminUser>(`/users/${id}`),
+  create: (input: CreateUserInput) =>
+    request<AdminUser>("/users", { method: "POST", body: input }),
+  update: (id: string, input: UpdateUserInput) =>
+    request<AdminUser>(`/users/${id}`, { method: "PUT", body: input }),
+  resetPassword: (id: string, newPassword: string) =>
+    request<MessageResponse>(`/users/${id}/reset-password`, {
+      method: "POST",
+      body: { newPassword },
+    }),
+  remove: (id: string) => request<void>(`/users/${id}`, { method: "DELETE" }),
+}
+
 // ---------- Applications ----------
 
 export const applicationsApi = {
-  list: (params?: { clientSlug?: string }) => {
-    const query = params?.clientSlug
-      ? `?clientSlug=${encodeURIComponent(params.clientSlug)}`
-      : ""
-    return request<Application[]>(`/applications${query}`)
+  list: (params?: { clientSlug?: string; userId?: string }) => {
+    const search = new URLSearchParams()
+    if (params?.clientSlug) search.set("clientSlug", params.clientSlug)
+    if (params?.userId) search.set("userId", params.userId)
+    const query = search.toString()
+    return request<Application[]>(`/applications${query ? `?${query}` : ""}`)
   },
   get: (id: string) => request<Application>(`/applications/${id}`),
   create: (input: CreateApplicationInput) =>

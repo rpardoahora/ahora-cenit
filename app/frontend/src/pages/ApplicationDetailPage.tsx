@@ -27,6 +27,14 @@ export function ApplicationDetailPage() {
     try {
       const data = await applicationsApi.get(id)
       setApplication(data)
+      if (data.portainerStackId !== null) {
+        applicationsApi
+          .status(id)
+          .then(({ status }) => setApplication((prev) => (prev ? { ...prev, status } : prev)))
+          .catch(() => {
+            // Si Portainer no responde, se mantiene el último estado conocido.
+          })
+      }
     } catch {
       toast.error("No se pudo cargar la aplicación.")
     } finally {

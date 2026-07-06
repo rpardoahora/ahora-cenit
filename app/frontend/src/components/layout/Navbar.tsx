@@ -1,5 +1,7 @@
 import { useState } from "react"
 import { Link } from "react-router-dom"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { Settings01Icon } from "@hugeicons/core-free-icons"
 import { useAuth } from "@/context/AuthContext"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -37,8 +39,13 @@ export function Navbar() {
           )}
 
           {user?.role === "Admin" && (
-            <Button variant="ghost" size="sm" render={<Link to="/admin/productos" />}>
-              Admin productos
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Administración"
+              render={<Link to="/admin" />}
+            >
+              <HugeiconsIcon icon={Settings01Icon} strokeWidth={2} />
             </Button>
           )}
 

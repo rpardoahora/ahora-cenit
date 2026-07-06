@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Link } from "react-router-dom"
+import { Link, useSearchParams } from "react-router-dom"
 import { toast } from "sonner"
 import { useAuth } from "@/context/AuthContext"
 import { applicationsApi, ApiError } from "@/lib/api"
@@ -22,8 +22,9 @@ export function ApplicationsListPage() {
   const { user } = useAuth()
   const isAdmin = user?.role === "Admin"
 
+  const [searchParams] = useSearchParams()
   const [applications, setApplications] = useState<Application[] | null>(null)
-  const [clientFilter, setClientFilter] = useState("")
+  const [clientFilter, setClientFilter] = useState(searchParams.get("clientSlug") ?? "")
 
   async function load() {
     try {
@@ -31,8 +32,26 @@ export function ApplicationsListPage() {
         isAdmin && clientFilter ? { clientSlug: clientFilter } : undefined
       )
       setApplications(data)
+      refreshStatuses(data)
     } catch {
       setApplications([])
+    }
+  }
+
+  /** Contrasta el estado guardado en BBDD con el real en Portainer/Docker. */
+  function refreshStatuses(apps: Application[]) {
+    for (const app of apps) {
+      if (app.portainerStackId === null) continue
+      applicationsApi
+        .status(app.id)
+        .then(({ status }) => {
+          setApplications((prev) =>
+            prev ? prev.map((a) => (a.id === app.id ? { ...a, status } : a)) : prev
+          )
+        })
+        .catch(() => {
+          // Si Portainer no responde, se mantiene el último estado conocido.
+        })
     }
   }
 

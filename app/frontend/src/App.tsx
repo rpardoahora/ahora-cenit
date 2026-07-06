@@ -1,7 +1,8 @@
-import { BrowserRouter, Route, Routes } from "react-router-dom"
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom"
 import { AuthProvider } from "@/context/AuthContext"
 import { Toaster } from "@/components/ui/sonner"
 import { Layout } from "@/components/layout/Layout"
+import { AdminLayout } from "@/components/layout/AdminLayout"
 import { RequireAuth } from "@/routes/RequireAuth"
 import { RequireAdmin } from "@/routes/RequireAdmin"
 import { CatalogPage } from "@/pages/CatalogPage"
@@ -12,6 +13,8 @@ import { ApplicationsListPage } from "@/pages/ApplicationsListPage"
 import { ApplicationDetailPage } from "@/pages/ApplicationDetailPage"
 import { ProductsListPage } from "@/pages/admin/ProductsListPage"
 import { ProductFormPage } from "@/pages/admin/ProductFormPage"
+import { UsersListPage } from "@/pages/admin/UsersListPage"
+import { UserFormPage } from "@/pages/admin/UserFormPage"
 import { ForgotPasswordPage } from "@/pages/ForgotPasswordPage"
 import { ResetPasswordPage } from "@/pages/ResetPasswordPage"
 import { ConfirmEmailPage } from "@/pages/ConfirmEmailPage"
@@ -36,9 +39,15 @@ function App() {
             </Route>
 
             <Route element={<RequireAdmin />}>
-              <Route path="admin/productos" element={<ProductsListPage />} />
-              <Route path="admin/productos/nuevo" element={<ProductFormPage />} />
-              <Route path="admin/productos/:id/editar" element={<ProductFormPage />} />
+              <Route path="admin" element={<AdminLayout />}>
+                <Route index element={<Navigate to="productos" replace />} />
+                <Route path="productos" element={<ProductsListPage />} />
+                <Route path="productos/nuevo" element={<ProductFormPage />} />
+                <Route path="productos/:id/editar" element={<ProductFormPage />} />
+                <Route path="usuarios" element={<UsersListPage />} />
+                <Route path="usuarios/nuevo" element={<UserFormPage />} />
+                <Route path="usuarios/:id/editar" element={<UserFormPage />} />
+              </Route>
             </Route>
           </Route>
         </Routes>

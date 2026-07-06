@@ -1,15 +1,15 @@
 # Stack de ahora-cenit para desplegar la imagen publicada por GitHub Actions
 # (.github/workflows/docker-build.yml), sin necesidad del código fuente ni
 # de reconstruir la imagen en el host. Requiere la red externa `proxy`
-# (creada por docker-compose.prod.yml de esta misma carpeta) y las mismas
-# variables de entorno que app/.env.prod.example.
+# (creada por docker-compose.prod.yml de esta misma carpeta) y las variables
+# de entorno de .env.cenit (copia .env.cenit.example y rellénalo).
 #
 # Uso:
-#   docker compose --env-file .env.prod -f docker-compose-cenit.yml pull
-#   docker compose --env-file .env.prod -f docker-compose-cenit.yml up -d
+#   docker compose --env-file .env.cenit -f docker-compose-cenit.yml pull
+#   docker compose --env-file .env.cenit -f docker-compose-cenit.yml up -d
 #
 # Para desplegar una versión concreta en lugar de la última build de `main`:
-#   IMAGE_TAG=sha-<commit> docker compose --env-file .env.prod -f docker-compose-cenit.yml up -d
+#   IMAGE_TAG=sha-<commit> docker compose --env-file .env.cenit -f docker-compose-cenit.yml up -d
 
 networks:
   proxy:

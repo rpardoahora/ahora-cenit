@@ -60,11 +60,13 @@ export function CatalogPage() {
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {products.map((product) => (
             <Card key={product.id} className="overflow-hidden">
-              <img
-                src={product.imageUrl}
-                alt={product.name}
-                className="h-40 w-full object-cover"
-              />
+              <div className="flex h-40 w-full items-center justify-center bg-muted/30 p-6">
+                <img
+                  src={product.imageUrl}
+                  alt={product.name}
+                  className="max-h-full max-w-full object-contain"
+                />
+              </div>
               <CardHeader>
                 <CardTitle>{product.name}</CardTitle>
                 <CardDescription className="line-clamp-3">

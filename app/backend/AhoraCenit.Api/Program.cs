@@ -3,6 +3,7 @@ using AhoraCenit.Api.Data;
 using AhoraCenit.Api.Features.Applications;
 using AhoraCenit.Api.Features.Auth;
 using AhoraCenit.Api.Features.Products;
+using AhoraCenit.Api.Features.Users;
 using AhoraCenit.Api.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -119,6 +120,7 @@ app.UseAuthorization();
 app.MapGroup("/api/auth").MapAuthEndpoints();
 app.MapGroup("/api/products").MapProductsEndpoints();
 app.MapGroup("/api/applications").MapApplicationsEndpoints();
+app.MapGroup("/api/users").MapUsersEndpoints();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 

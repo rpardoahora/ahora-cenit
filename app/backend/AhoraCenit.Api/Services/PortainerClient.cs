@@ -116,6 +116,12 @@ public class PortainerClient : IPortainerClient
         try
         {
             using var response = await _httpClient.GetAsync($"api/stacks/{stackId}", ct);
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                // El stack ya no existe en Portainer (borrado manualmente fuera de la app).
+                return ApplicationStatus.Deleted;
+            }
+
             if (!response.IsSuccessStatusCode)
             {
                 return ApplicationStatus.Error;

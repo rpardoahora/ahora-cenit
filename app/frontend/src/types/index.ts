@@ -9,6 +9,24 @@ export interface User {
   emailConfirmed: boolean
 }
 
+export interface AdminUser extends User {
+  createdAt: string
+  applicationsCount: number
+}
+
+export interface CreateUserInput {
+  email: string
+  password: string
+  name: string
+  role: Role
+}
+
+export interface UpdateUserInput {
+  email: string
+  name: string
+  role: Role
+}
+
 export interface AuthResponse {
   token: string
   user: User

@@ -22,7 +22,7 @@ export function ProductsListPage() {
 
   async function load() {
     try {
-      setProducts(await productsApi.list())
+      setProducts(await productsApi.list({ includeInactive: true }))
     } catch {
       setProducts([])
     }
