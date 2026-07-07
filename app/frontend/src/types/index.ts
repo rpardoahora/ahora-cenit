@@ -1,5 +1,9 @@
 export type Role = "Admin" | "Cliente"
 
+export interface AppConfig {
+  baseDomain: string
+}
+
 export interface User {
   id: string
   name: string
@@ -101,4 +105,17 @@ export interface CreateApplicationInput {
   productId: string
   subdomain: string
   envVars: Record<string, string>
+}
+
+export interface ApplicationUsage {
+  applicationId: string
+  subdomain: string
+  productName: string
+  userId: string
+  ownerName: string
+  ownerClientSlug: string
+  cpuPercent: number
+  memoryUsageBytes: number
+  diskUsageBytes: number
+  containerCount: number
 }

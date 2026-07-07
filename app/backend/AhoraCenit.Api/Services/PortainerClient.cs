@@ -10,6 +10,9 @@ public record PortainerCreateStackResult(bool Success, int? StackId, int Endpoin
 
 public record PortainerOperationResult(bool Success, string? ErrorMessage);
 
+/// <summary>Consumo agregado de recursos de todos los contenedores de un stack.</summary>
+public record StackResourceUsage(double CpuPercent, long MemoryUsageBytes, long DiskUsageBytes, int ContainerCount);
+
 /// <summary>
 /// Abstraction over the Portainer CE HTTP API used to manage Applications'
 /// underlying docker compose stacks. All Portainer-specific request/response
@@ -43,6 +46,14 @@ public interface IPortainerClient
     Task<PortainerOperationResult> StopStackAsync(int stackId, int endpointId, CancellationToken ct = default);
 
     Task<PortainerOperationResult> DeleteStackAsync(int stackId, int endpointId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Suma el consumo de CPU/RAM/disco de todos los contenedores del stack,
+    /// consultando la API de Docker (vía el proxy de Portainer) contenedor a
+    /// contenedor. Puede tardar ~1s por contenedor (Docker necesita una
+    /// muestra para calcular el % de CPU).
+    /// </summary>
+    Task<StackResourceUsage> GetStackResourceUsageAsync(int endpointId, string stackName, CancellationToken ct = default);
 }
 
 public class PortainerClient : IPortainerClient
@@ -162,6 +173,23 @@ public class PortainerClient : IPortainerClient
 
     private async Task<ApplicationStatus?> TryGetStatusFromContainersAsync(int endpointId, string stackName, CancellationToken ct)
     {
+        var containers = await ListStackContainersAsync(endpointId, stackName, ct);
+        if (containers is null)
+        {
+            return null;
+        }
+
+        if (containers.Count == 0)
+        {
+            return ApplicationStatus.Deleted;
+        }
+
+        return containers.Any(c => c.State == "running") ? ApplicationStatus.Running : ApplicationStatus.Stopped;
+    }
+
+    /// <summary>Contenedores Docker (de cualquier estado) que pertenecen al stack de compose dado.</summary>
+    private async Task<List<DockerContainerSummaryDto>?> ListStackContainersAsync(int endpointId, string stackName, CancellationToken ct)
+    {
         try
         {
             var filters = JsonSerializer.Serialize(new Dictionary<string, string[]>
@@ -178,23 +206,131 @@ public class PortainerClient : IPortainerClient
                 return null;
             }
 
-            var containers = await response.Content.ReadFromJsonAsync<List<DockerContainerSummaryDto>>(JsonOptions, ct);
-            if (containers is null)
-            {
-                return null;
-            }
-
-            if (containers.Count == 0)
-            {
-                return ApplicationStatus.Deleted;
-            }
-
-            return containers.Any(c => c.State == "running") ? ApplicationStatus.Running : ApplicationStatus.Stopped;
+            return await response.Content.ReadFromJsonAsync<List<DockerContainerSummaryDto>>(JsonOptions, ct);
         }
         catch
         {
             return null;
         }
+    }
+
+    public async Task<StackResourceUsage> GetStackResourceUsageAsync(int endpointId, string stackName, CancellationToken ct = default)
+    {
+        var containers = await ListStackContainersAsync(endpointId, stackName, ct);
+        if (containers is null || containers.Count == 0)
+        {
+            return new StackResourceUsage(0, 0, 0, 0);
+        }
+
+        var perContainer = await Task.WhenAll(
+            containers.Select(c => GetContainerUsageAsync(endpointId, c.Id, ct)));
+
+        var valid = perContainer.Where(u => u is not null).Select(u => u!.Value).ToList();
+
+        return new StackResourceUsage(
+            CpuPercent: valid.Sum(u => u.CpuPercent),
+            MemoryUsageBytes: valid.Sum(u => u.MemoryUsageBytes),
+            DiskUsageBytes: valid.Sum(u => u.DiskUsageBytes),
+            ContainerCount: valid.Count);
+    }
+
+    // Con stream=false, Docker a veces devuelve precpu_stats == cpu_stats (delta 0) si no
+    // hay ya un stream de stats abierto para ese contenedor. Para tener un % de CPU fiable,
+    // pedimos dos muestras reales separadas por este intervalo y calculamos el delta nosotros.
+    private static readonly TimeSpan CpuSampleInterval = TimeSpan.FromSeconds(1);
+
+    private async Task<(double CpuPercent, long MemoryUsageBytes, long DiskUsageBytes)?> GetContainerUsageAsync(
+        int endpointId, string containerId, CancellationToken ct)
+    {
+        try
+        {
+            var statsUrl = $"api/endpoints/{endpointId}/docker/containers/{containerId}/stats?stream=false";
+
+            using var firstResponse = await _httpClient.GetAsync(statsUrl, ct);
+            if (!firstResponse.IsSuccessStatusCode)
+            {
+                return null;
+            }
+            var first = await firstResponse.Content.ReadFromJsonAsync<DockerStatsDto>(JsonOptions, ct);
+
+            await Task.Delay(CpuSampleInterval, ct);
+
+            // La segunda muestra de stats y el inspect (para el disco) se piden en paralelo.
+            var secondResponseTask = _httpClient.GetAsync(statsUrl, ct);
+            var inspectResponseTask = _httpClient.GetAsync(
+                $"api/endpoints/{endpointId}/docker/containers/{containerId}/json?size=true", ct);
+
+            using var secondResponse = await secondResponseTask;
+            using var inspectResponse = await inspectResponseTask;
+
+            if (first is null || !secondResponse.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var second = await secondResponse.Content.ReadFromJsonAsync<DockerStatsDto>(JsonOptions, ct);
+            if (second is null)
+            {
+                return null;
+            }
+
+            var cpuPercent = CalculateCpuPercent(first, second);
+            var memoryBytes = CalculateMemoryUsage(second);
+
+            long diskBytes = 0;
+            if (inspectResponse.IsSuccessStatusCode)
+            {
+                var info = await inspectResponse.Content.ReadFromJsonAsync<DockerContainerInspectDto>(JsonOptions, ct);
+                diskBytes = info?.SizeRw ?? 0;
+            }
+
+            return (cpuPercent, memoryBytes, diskBytes);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static double CalculateCpuPercent(DockerStatsDto first, DockerStatsDto second)
+    {
+        if (first.CpuStats?.CpuUsage is null || second.CpuStats?.CpuUsage is null)
+        {
+            return 0;
+        }
+
+        var cpuDelta = second.CpuStats.CpuUsage.TotalUsage - first.CpuStats.CpuUsage.TotalUsage;
+        var systemDelta = second.CpuStats.SystemCpuUsage - first.CpuStats.SystemCpuUsage;
+        if (systemDelta <= 0 || cpuDelta < 0)
+        {
+            return 0;
+        }
+
+        var onlineCpus = second.CpuStats.OnlineCpus
+            ?? second.CpuStats.CpuUsage.PerCpuUsage?.Count
+            ?? 1;
+
+        return (double)cpuDelta / systemDelta * onlineCpus * 100.0;
+    }
+
+    private static long CalculateMemoryUsage(DockerStatsDto stats)
+    {
+        if (stats.MemoryStats is null)
+        {
+            return 0;
+        }
+
+        // El uso "real" excluye la cache de página, igual que hace `docker stats`.
+        // cgroup v1 la llama "cache"; cgroup v2, "inactive_file".
+        long cache = 0;
+        stats.MemoryStats.Stats?.TryGetValue("cache", out cache);
+        if (cache == 0)
+        {
+            stats.MemoryStats.Stats?.TryGetValue("inactive_file", out cache);
+        }
+
+        var usage = stats.MemoryStats.Usage - cache;
+        return usage < 0 ? stats.MemoryStats.Usage : usage;
     }
 
     public async Task<PortainerOperationResult> StartStackAsync(int stackId, int endpointId, CancellationToken ct = default)
@@ -288,7 +424,55 @@ public class PortainerClient : IPortainerClient
 
     private class DockerContainerSummaryDto
     {
+        [JsonPropertyName("Id")]
+        public string Id { get; set; } = string.Empty;
+
         [JsonPropertyName("State")]
         public string State { get; set; } = string.Empty;
+    }
+
+    private class DockerContainerInspectDto
+    {
+        [JsonPropertyName("SizeRw")]
+        public long? SizeRw { get; set; }
+    }
+
+    private class DockerStatsDto
+    {
+        [JsonPropertyName("cpu_stats")]
+        public DockerCpuStatsDto? CpuStats { get; set; }
+
+        [JsonPropertyName("memory_stats")]
+        public DockerMemoryStatsDto? MemoryStats { get; set; }
+    }
+
+    private class DockerCpuStatsDto
+    {
+        [JsonPropertyName("cpu_usage")]
+        public DockerCpuUsageDto? CpuUsage { get; set; }
+
+        [JsonPropertyName("system_cpu_usage")]
+        public long SystemCpuUsage { get; set; }
+
+        [JsonPropertyName("online_cpus")]
+        public int? OnlineCpus { get; set; }
+    }
+
+    private class DockerCpuUsageDto
+    {
+        [JsonPropertyName("total_usage")]
+        public long TotalUsage { get; set; }
+
+        [JsonPropertyName("percpu_usage")]
+        public List<long>? PerCpuUsage { get; set; }
+    }
+
+    private class DockerMemoryStatsDto
+    {
+        [JsonPropertyName("usage")]
+        public long Usage { get; set; }
+
+        [JsonPropertyName("stats")]
+        public Dictionary<string, long>? Stats { get; set; }
     }
 }

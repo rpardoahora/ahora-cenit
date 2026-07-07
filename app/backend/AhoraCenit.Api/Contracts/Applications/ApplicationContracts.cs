@@ -22,3 +22,15 @@ public record ApplicationResponse(
     int PortainerEndpointId,
     DateTime CreatedAt,
     DateTime UpdatedAt);
+
+public record ApplicationUsageResponse(
+    Guid ApplicationId,
+    string Subdomain,
+    string ProductName,
+    Guid UserId,
+    string OwnerName,
+    string OwnerClientSlug,
+    double CpuPercent,
+    long MemoryUsageBytes,
+    long DiskUsageBytes,
+    int ContainerCount);

@@ -15,6 +15,7 @@ import { ProductsListPage } from "@/pages/admin/ProductsListPage"
 import { ProductFormPage } from "@/pages/admin/ProductFormPage"
 import { UsersListPage } from "@/pages/admin/UsersListPage"
 import { UserFormPage } from "@/pages/admin/UserFormPage"
+import { UsageDashboardPage } from "@/pages/admin/UsageDashboardPage"
 import { ForgotPasswordPage } from "@/pages/ForgotPasswordPage"
 import { ResetPasswordPage } from "@/pages/ResetPasswordPage"
 import { ConfirmEmailPage } from "@/pages/ConfirmEmailPage"
@@ -47,6 +48,7 @@ function App() {
                 <Route path="usuarios" element={<UsersListPage />} />
                 <Route path="usuarios/nuevo" element={<UserFormPage />} />
                 <Route path="usuarios/:id/editar" element={<UserFormPage />} />
+                <Route path="consumo" element={<UsageDashboardPage />} />
               </Route>
             </Route>
           </Route>

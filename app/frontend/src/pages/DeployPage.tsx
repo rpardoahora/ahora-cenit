@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import { toast } from "sonner"
-import { productsApi, applicationsApi, ApiError } from "@/lib/api"
+import { productsApi, applicationsApi, configApi, ApiError } from "@/lib/api"
 import type { Product } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -29,6 +29,7 @@ export function DeployPage() {
   const [envVars, setEnvVars] = useState<Record<string, string>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [estimateSeconds, setEstimateSeconds] = useState(DEFAULT_ESTIMATE_SECONDS)
+  const [baseDomain, setBaseDomain] = useState(window.location.hostname)
   const [progress, setProgress] = useState(0)
   const progressInterval = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -62,6 +63,13 @@ export function DeployPage() {
           }
         } catch {
           // sin estadísticas todavía, se usa la estimación por defecto
+        }
+
+        try {
+          const config = await configApi.get()
+          if (!cancelled) setBaseDomain(config.baseDomain)
+        } catch {
+          // si falla, se mantiene window.location.hostname como aproximación
         }
       } catch {
         if (!cancelled) toast.error("No se pudo cargar el producto.")
@@ -149,7 +157,7 @@ export function DeployPage() {
                 <FieldDescription>
                   Tu aplicación estará disponible en{" "}
                   <code>
-                    {subdomain || "<subdominio>"}.{window.location.hostname}
+                    {subdomain || "<subdominio>"}.{baseDomain}
                   </code>
                 </FieldDescription>
               </Field>

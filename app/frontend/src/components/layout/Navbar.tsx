@@ -22,19 +22,20 @@ export function Navbar() {
 
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur-sm">
-      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
-        <Link to="/" className="font-heading text-base font-semibold">
+      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-2 px-3 sm:px-4">
+        <Link to="/" className="shrink-0 font-heading text-base font-semibold">
           ahora<span className="text-primary">cenit</span>
         </Link>
 
-        <nav className="flex items-center gap-1">
-          <Button variant="ghost" size="sm" render={<Link to="/" />}>
+        <nav className="flex min-w-0 items-center gap-0.5 sm:gap-1">
+          <Button variant="ghost" size="sm" className="hidden sm:inline-flex" render={<Link to="/" />}>
             Catálogo
           </Button>
 
           {user && (
             <Button variant="ghost" size="sm" render={<Link to="/aplicaciones" />}>
-              Mis aplicaciones
+              <span className="hidden sm:inline">Mis aplicaciones</span>
+              <span className="sm:hidden">Apps</span>
             </Button>
           )}
 
@@ -50,18 +51,24 @@ export function Navbar() {
           )}
 
           {!user ? (
-            <div className="ml-2 flex items-center gap-2">
-              <Button variant="ghost" size="sm" render={<Link to="/login" />}>
-                Iniciar sesión
+            <div className="ml-1 flex items-center gap-1 sm:ml-2 sm:gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="px-2 sm:px-3"
+                render={<Link to="/login" />}
+              >
+                <span className="hidden sm:inline">Iniciar sesión</span>
+                <span className="sm:hidden">Entrar</span>
               </Button>
-              <Button size="sm" render={<Link to="/registro" />}>
+              <Button size="sm" className="px-2 sm:px-3" render={<Link to="/registro" />}>
                 Registrarse
               </Button>
             </div>
           ) : (
             <>
               <button
-                className="ml-2 cursor-pointer rounded-full focus-visible:outline-2 focus-visible:outline-ring"
+                className="ml-1 cursor-pointer rounded-full focus-visible:outline-2 focus-visible:outline-ring sm:ml-2"
                 aria-label="Cuenta"
                 onClick={() => setProfileOpen(true)}
               >

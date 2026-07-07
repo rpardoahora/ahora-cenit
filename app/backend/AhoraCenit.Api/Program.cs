@@ -178,6 +178,10 @@ app.MapGroup("/api/users").MapUsersEndpoints();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 
+app.MapGet("/api/config", (IConfiguration configuration) =>
+    Results.Ok(new { baseDomain = configuration["BaseDomain"] ?? "ahoracenit.localhost" }))
+    .AllowAnonymous();
+
 // Frontend (Vite build) se sirve desde wwwroot, en el mismo servicio/puerto que la API.
 app.UseDefaultFiles();
 app.UseStaticFiles();

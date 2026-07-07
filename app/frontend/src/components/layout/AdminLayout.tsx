@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils"
 const NAV_ITEMS = [
   { to: "/admin/productos", label: "Productos" },
   { to: "/admin/usuarios", label: "Usuarios" },
+  { to: "/admin/consumo", label: "Consumo" },
 ]
 
 export function AdminLayout() {

@@ -19,6 +19,7 @@ public static class ApplicationsEndpoints
 
         group.MapPost("/", CreateAsync);
         group.MapGet("/", ListAsync);
+        group.MapGet("/usage", GetUsageSummaryAsync).RequireAuthorization("AdminOnly");
         group.MapGet("/{id:guid}", GetByIdAsync);
         group.MapGet("/{id:guid}/status", RefreshStatusAsync);
         group.MapPost("/{id:guid}/stop", StopAsync);
@@ -201,6 +202,36 @@ public static class ApplicationsEndpoints
         var baseDomain = GetBaseDomain(configuration);
         var applications = await query.OrderByDescending(a => a.CreatedAt).ToListAsync(ct);
         return Results.Ok(applications.Select(a => ToResponse(a, baseDomain)));
+    }
+
+    private static async Task<IResult> GetUsageSummaryAsync(
+        AppDbContext db,
+        IPortainerClient portainerClient,
+        CancellationToken ct)
+    {
+        var applications = await db.Applications
+            .Include(a => a.Product)
+            .Include(a => a.User)
+            .Where(a => a.PortainerStackId != null)
+            .ToListAsync(ct);
+
+        var results = await Task.WhenAll(applications.Select(async a =>
+        {
+            var usage = await portainerClient.GetStackResourceUsageAsync(a.PortainerEndpointId, a.Subdomain, ct);
+            return new ApplicationUsageResponse(
+                a.Id,
+                a.Subdomain,
+                a.Product?.Name ?? string.Empty,
+                a.UserId,
+                a.User?.Name ?? string.Empty,
+                a.User?.ClientSlug ?? string.Empty,
+                usage.CpuPercent,
+                usage.MemoryUsageBytes,
+                usage.DiskUsageBytes,
+                usage.ContainerCount);
+        }));
+
+        return Results.Ok(results);
     }
 
     private static async Task<IResult> GetByIdAsync(

@@ -1,8 +1,10 @@
 import { toast } from "sonner"
 import type {
   AdminUser,
+  AppConfig,
   Application,
   ApplicationStatus,
+  ApplicationUsage,
   AuthResponse,
   CreateApplicationInput,
   CreateUserInput,
@@ -101,6 +103,12 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   return (text ? JSON.parse(text) : undefined) as T
 }
 
+// ---------- Config ----------
+
+export const configApi = {
+  get: () => request<AppConfig>("/config", { silent: true }),
+}
+
 // ---------- Auth ----------
 
 export const authApi = {
@@ -187,4 +195,5 @@ export const applicationsApi = {
     request<Application>(`/applications/${id}/stop`, { method: "POST" }),
   remove: (id: string) =>
     request<void>(`/applications/${id}`, { method: "DELETE" }),
+  usage: () => request<ApplicationUsage[]>("/applications/usage"),
 }
