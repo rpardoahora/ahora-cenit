@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import { toast } from "sonner"
 import { applicationsApi, ApiError } from "@/lib/api"
@@ -46,6 +46,31 @@ export function ApplicationDetailPage() {
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
+
+  // Mientras Traefik está obteniendo el certificado, refresca solo el estado
+  // periódicamente para que la app pase a "En ejecución" sin recargar a mano.
+  const pollAttempts = useRef(0)
+  useEffect(() => {
+    if (!id || application?.status !== "Provisioning") {
+      pollAttempts.current = 0
+      return
+    }
+
+    const interval = setInterval(async () => {
+      pollAttempts.current += 1
+      try {
+        const { status } = await applicationsApi.status(id)
+        setApplication((prev) => (prev ? { ...prev, status } : prev))
+      } catch {
+        // se reintenta en el próximo tick
+      }
+      if (pollAttempts.current >= 15) {
+        clearInterval(interval)
+      }
+    }, 4000)
+
+    return () => clearInterval(interval)
+  }, [id, application?.status])
 
   async function handleRefresh() {
     if (!id) return
@@ -135,6 +160,13 @@ export function ApplicationDetailPage() {
             <dd>{new Date(application.createdAt).toLocaleString()}</dd>
           </dl>
 
+          {application.status === "Provisioning" && (
+            <p className="text-sm text-muted-foreground">
+              El contenedor ya está en marcha; Traefik está emitiendo el certificado HTTPS
+              del dominio. Puede tardar hasta un minuto.
+            </p>
+          )}
+
           {Object.keys(application.envVarValues).length > 0 && (
             <div>
               <h3 className="mb-1.5 text-sm font-medium">Variables de entorno</h3>
@@ -153,7 +185,7 @@ export function ApplicationDetailPage() {
             <Button variant="outline" onClick={handleRefresh} disabled={isRefreshing}>
               {isRefreshing ? "Actualizando..." : "Refrescar estado"}
             </Button>
-            {application.status === "Running" ? (
+            {application.status === "Running" || application.status === "Provisioning" ? (
               <Button variant="outline" onClick={handleStop}>
                 Parar
               </Button>

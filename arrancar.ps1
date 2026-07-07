@@ -48,9 +48,24 @@ function Read-YesNo {
 }
 
 function New-RandomSecret {
+    # Genera un secreto con mayuscula, minuscula, digito y simbolo garantizados
+    # (algunos servicios, como OpenObserve, exigen las 4 categorias a la vez).
     param([int]$Length = 32)
-    $chars = (48..57) + (65..90) + (97..122)
-    -join (1..$Length | ForEach-Object { [char]($chars | Get-Random) })
+    $lower = 97..122
+    $upper = 65..90
+    $digits = 48..57
+    $symbols = @([int][char]'!', [int][char]'@', [int][char]'#', [int][char]'^', [int][char]'*', [int][char]'-', [int][char]'_', [int][char]'+', [int][char]'=')
+    $all = $lower + $upper + $digits + $symbols
+
+    $guaranteed = @(
+        [char]($lower | Get-Random)
+        [char]($upper | Get-Random)
+        [char]($digits | Get-Random)
+        [char]($symbols | Get-Random)
+    )
+    $rest = 1..($Length - $guaranteed.Length) | ForEach-Object { [char]($all | Get-Random) }
+
+    -join (($guaranteed + $rest) | Sort-Object { Get-Random })
 }
 
 function Set-EnvFileContent {
@@ -59,7 +74,41 @@ function Set-EnvFileContent {
     [System.IO.File]::WriteAllLines($Path, $Lines, $utf8NoBom)
 }
 
-# Recorre un fichero .env pidiendo confirmacion/valor de cada variable.
+# Resuelve el valor final de una variable: override fijo, generacion automatica
+# de secretos con valor de ejemplo, o pregunta interactiva con el valor actual
+# como sugerencia.
+function Resolve-EnvValue {
+    param(
+        [string]$Key,
+        [string]$CurrentValue,
+        [hashtable]$Overrides
+    )
+
+    if ($Overrides.ContainsKey($Key)) {
+        return $Overrides[$Key]
+    }
+
+    $looksLikePlaceholder = $CurrentValue -match '(?i)replace|changeme|dev-only'
+    $isSecretLike = $Key -match '(?i)secret|password|apikey'
+
+    if ($looksLikePlaceholder -and $isSecretLike) {
+        if (Read-YesNo "  $Key aun tiene un valor de ejemplo. Generar uno aleatorio seguro?" $true) {
+            $generated = New-RandomSecret
+            Write-Host "    -> $Key generado automaticamente."
+            return $generated
+        }
+    }
+
+    $input = Read-Host "  $Key [$CurrentValue]"
+    if ([string]::IsNullOrWhiteSpace($input)) {
+        return $CurrentValue
+    }
+    return $input
+}
+
+# Recorre un fichero .env pidiendo confirmacion/valor de cada variable, y de
+# paso incorpora (preguntando igual) cualquier variable nueva que exista en la
+# plantilla pero todavia no en el fichero (p.ej. tras actualizar el proyecto).
 # $Overrides permite fijar valores sin preguntar (p.ej. DOMAIN compartido).
 function Edit-EnvFile {
     param(
@@ -77,6 +126,7 @@ function Edit-EnvFile {
 
     $lines = Get-Content -Path $Path
     $result = New-Object System.Collections.Generic.List[string]
+    $seenKeys = New-Object System.Collections.Generic.HashSet[string]
 
     foreach ($line in $lines) {
         $trimmed = $line.Trim()
@@ -93,38 +143,62 @@ function Edit-EnvFile {
 
         $key = $Matches[1]
         $currentValue = $Matches[2]
+        [void]$seenKeys.Add($key)
 
-        if ($Overrides.ContainsKey($key)) {
-            $result.Add("$key=$($Overrides[$key])")
-            continue
-        }
+        $value = Resolve-EnvValue -Key $key -CurrentValue $currentValue -Overrides $Overrides
+        $result.Add("$key=$value")
+    }
 
-        $looksLikePlaceholder = $currentValue -match '(?i)replace|changeme|dev-only'
-        $isSecretLike = $key -match '(?i)secret|password|apikey'
+    $samePathAsTemplate = (Test-Path $TemplatePath) -and
+        ((Resolve-Path $TemplatePath).Path -eq (Resolve-Path $Path).Path)
 
-        if ($looksLikePlaceholder -and $isSecretLike) {
-            if (Read-YesNo "  $key aun tiene un valor de ejemplo. Generar uno aleatorio seguro?" $true) {
-                $generated = New-RandomSecret
-                Write-Host "    -> $key generado automaticamente."
-                $result.Add("$key=$generated")
-                continue
+    if ((Test-Path $TemplatePath) -and -not $samePathAsTemplate) {
+        $newKeysAdded = $false
+
+        foreach ($line in Get-Content -Path $TemplatePath) {
+            $trimmed = $line.Trim()
+            if ($trimmed -eq '' -or $trimmed.StartsWith('#')) { continue }
+            if ($trimmed -notmatch '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { continue }
+
+            $key = $Matches[1]
+            if ($seenKeys.Contains($key)) { continue }
+
+            if (-not $newKeysAdded) {
+                Write-Host "  (variables nuevas de la plantilla, no estaban en $Path)"
+                $result.Add('')
+                $result.Add('# --- Variables nuevas anadidas automaticamente ---')
+                $newKeysAdded = $true
             }
-        }
 
-        $input = Read-Host "  $key [$currentValue]"
-        if ([string]::IsNullOrWhiteSpace($input)) {
-            $result.Add("$key=$currentValue")
-        } else {
-            $result.Add("$key=$input")
+            $currentValue = $Matches[2]
+            $value = Resolve-EnvValue -Key $key -CurrentValue $currentValue -Overrides $Overrides
+            $result.Add("$key=$value")
+            [void]$seenKeys.Add($key)
         }
     }
 
     Set-EnvFileContent -Path $Path -Lines $result
 }
 
+# Docker (y docker compose) escriben avisos no fatales en stderr (p.ej. una
+# variable de entorno sin definir). Con $ErrorActionPreference='Stop' activo,
+# PowerShell 5.1 escala esas lineas a un error terminante aunque el comando
+# acabe con exit code 0. Bajamos la preferencia solo mientras se ejecuta el
+# comando nativo y comprobamos $LASTEXITCODE explicitamente.
+function Invoke-Native {
+    param([scriptblock]$Command)
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Command
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
 function Test-DockerNetwork {
     param([string]$Name)
-    docker network inspect $Name *> $null
+    Invoke-Native { docker network inspect $Name *> $null }
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -132,7 +206,7 @@ function Confirm-DockerNetwork {
     param([string]$Name)
     if (-not (Test-DockerNetwork -Name $Name)) {
         Write-Host "Creando red externa '$Name'..."
-        docker network create $Name | Out-Null
+        Invoke-Native { docker network create $Name | Out-Null }
     }
 }
 
@@ -140,7 +214,7 @@ function Test-StackRunning {
     param([string]$WorkDir, [string]$ComposeFile, [string]$EnvFile)
     Push-Location $WorkDir
     try {
-        $ids = docker compose --env-file $EnvFile -f $ComposeFile ps -q 2>$null
+        $ids = Invoke-Native { docker compose --env-file $EnvFile -f $ComposeFile ps -q 2>$null }
         return -not [string]::IsNullOrWhiteSpace(($ids -join ''))
     } finally {
         Pop-Location
@@ -152,7 +226,10 @@ function Remove-Stack {
     Write-Host "Borrando instalacion previa de $Label (containers + volumenes)..." -ForegroundColor Yellow
     Push-Location $WorkDir
     try {
-        docker compose --env-file $EnvFile -f $ComposeFile down -v
+        Invoke-Native { docker compose --env-file $EnvFile -f $ComposeFile down -v }
+        if ($LASTEXITCODE -ne 0) {
+            throw "docker compose down fallo (exit code $LASTEXITCODE) en $WorkDir."
+        }
     } finally {
         Pop-Location
     }
@@ -162,7 +239,10 @@ function Start-Stack {
     param([string]$WorkDir, [string]$ComposeFile, [string]$EnvFile, [string[]]$ExtraArgs = @())
     Push-Location $WorkDir
     try {
-        docker compose --env-file $EnvFile -f $ComposeFile up -d @ExtraArgs
+        Invoke-Native { docker compose --env-file $EnvFile -f $ComposeFile up -d @ExtraArgs }
+        if ($LASTEXITCODE -ne 0) {
+            throw "docker compose up fallo (exit code $LASTEXITCODE) en $WorkDir."
+        }
     } finally {
         Pop-Location
     }
@@ -189,8 +269,15 @@ $infraComposeFile = "docker-compose.$envName.yml"
 $appComposeFile   = "docker-compose.$envName.yml"
 $infraEnvPath     = Join-Path $InfraDir ".env.$envName"
 $appEnvPath       = Join-Path $AppDir ".env.$envName"
-$infraEnvTemplate = if ($envName -eq "prod") { Join-Path $InfraDir ".env.prod.example" } else { $infraEnvPath }
-$appEnvTemplate   = if ($envName -eq "prod") { Join-Path $AppDir ".env.prod.example" } else { $appEnvPath }
+
+# Preferimos una plantilla .env.<entorno>.example dedicada (para detectar
+# variables nuevas anadidas al proyecto); si no existe, se usa el propio
+# fichero como referencia, como hasta ahora.
+$infraEnvTemplate = Join-Path $InfraDir ".env.$envName.example"
+if (-not (Test-Path $infraEnvTemplate)) { $infraEnvTemplate = $infraEnvPath }
+
+$appEnvTemplate = Join-Path $AppDir ".env.$envName.example"
+if (-not (Test-Path $appEnvTemplate)) { $appEnvTemplate = $appEnvPath }
 
 # --------------------------------------------------------------------------
 # Detectar instalacion previa y ofrecer borrarla

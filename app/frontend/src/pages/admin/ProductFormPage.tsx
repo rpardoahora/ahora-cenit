@@ -32,6 +32,7 @@ export function ProductFormPage() {
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
   const [imageUrl, setImageUrl] = useState("")
+  const [websiteUrl, setWebsiteUrl] = useState("")
   const [composeTemplate, setComposeTemplate] = useState("")
   const [isActive, setIsActive] = useState(true)
   const [envVars, setEnvVars] = useState<EnvVarRow[]>([])
@@ -44,6 +45,7 @@ export function ProductFormPage() {
         setName(product.name)
         setDescription(product.description)
         setImageUrl(product.imageUrl)
+        setWebsiteUrl(product.websiteUrl)
         setComposeTemplate(product.composeTemplate)
         setIsActive(product.isActive)
         setEnvVars(
@@ -82,6 +84,7 @@ export function ProductFormPage() {
         name,
         description,
         imageUrl,
+        websiteUrl,
         composeTemplate,
         isActive,
         envVarsSchema: envVars.map(({ rowId: _rowId, ...envVar }) => envVar),
@@ -152,6 +155,17 @@ export function ProductFormPage() {
                   required
                   value={imageUrl}
                   onChange={(e) => setImageUrl(e.target.value)}
+                  placeholder="https://..."
+                />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="websiteUrl">URL del sitio web</FieldLabel>
+                <Input
+                  id="websiteUrl"
+                  type="url"
+                  value={websiteUrl}
+                  onChange={(e) => setWebsiteUrl(e.target.value)}
                   placeholder="https://..."
                 />
               </Field>

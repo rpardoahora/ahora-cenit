@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Claims;
 using System.Text.Json;
 using AhoraCenit.Api.Contracts.Applications;
@@ -36,8 +37,10 @@ public static class ApplicationsEndpoints
         AppDbContext db,
         IPortainerClient portainerClient,
         IConfiguration configuration,
+        IAuditLogger auditLogger,
         CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
         var userId = principal.GetUserId();
         var user = await db.Users.FindAsync([userId], ct);
         if (user is null)
@@ -111,13 +114,37 @@ public static class ApplicationsEndpoints
             envVars: portainerEnvVars,
             ct: CancellationToken.None);
 
+        var auditParameters = new
+        {
+            product.Id,
+            product.Name,
+            application.Subdomain,
+            EnvVars = RedactEnvVars(mergedEnvVars, schema)
+        };
+
         if (result.Success)
         {
             application.PortainerStackId = result.StackId;
             application.PortainerEndpointId = result.EndpointId;
-            application.Status = ApplicationStatus.Running;
+            // Recién creado: el certificado TLS (si aplica) nunca está listo todavía,
+            // así que no merece la pena comprobarlo por red aquí; lo hará el primer refresh.
+            application.Status = TlsStatus.RequiresCertificateCheck(baseDomain)
+                ? ApplicationStatus.Provisioning
+                : ApplicationStatus.Running;
             application.UpdatedAt = DateTime.UtcNow;
+            sw.Stop();
+            db.DeploymentDurationSamples.Add(new DeploymentDurationSample
+            {
+                ProductId = product.Id,
+                DurationSeconds = sw.Elapsed.TotalSeconds
+            });
             await db.SaveChangesAsync(CancellationToken.None);
+
+            await auditLogger.RecordAsync(
+                principal, "Application", "Create", application.Id,
+                auditParameters,
+                result: new { application.Id, application.Subdomain, application.PortainerStackId },
+                sw.Elapsed, success: true);
 
             return Results.Created($"/api/applications/{application.Id}", ToResponse(application, baseDomain));
         }
@@ -125,6 +152,13 @@ public static class ApplicationsEndpoints
         application.Status = ApplicationStatus.Error;
         application.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(CancellationToken.None);
+        sw.Stop();
+
+        await auditLogger.RecordAsync(
+            principal, "Application", "Create", application.Id,
+            auditParameters,
+            result: null,
+            sw.Elapsed, success: false, errorMessage: result.ErrorMessage);
 
         return Results.Json(
             new
@@ -227,7 +261,13 @@ public static class ApplicationsEndpoints
         var status = await portainerClient.GetStackStatusAsync(
             application.PortainerStackId.Value,
             application.PortainerEndpointId,
+            application.Subdomain,
             ct);
+
+        if (status == ApplicationStatus.Running)
+        {
+            status = await ResolveRunningStatusAsync(application.Subdomain, baseDomain, ct);
+        }
 
         application.Status = status;
         application.UpdatedAt = DateTime.UtcNow;
@@ -236,14 +276,32 @@ public static class ApplicationsEndpoints
         return Results.Ok(ToResponse(application, baseDomain));
     }
 
+    /// <summary>
+    /// El contenedor está corriendo según Docker; esto afina ese estado comprobando si
+    /// Traefik ya sirve el certificado TLS real del subdominio (cuando aplica).
+    /// </summary>
+    private static async Task<ApplicationStatus> ResolveRunningStatusAsync(string subdomain, string baseDomain, CancellationToken ct)
+    {
+        if (!TlsStatus.RequiresCertificateCheck(baseDomain))
+        {
+            return ApplicationStatus.Running;
+        }
+
+        var certReady = await TlsStatus.IsCertificateReadyAsync($"{subdomain}.{baseDomain}", ct);
+        return certReady ? ApplicationStatus.Running : ApplicationStatus.Provisioning;
+    }
+
     private static async Task<IResult> StopAsync(
         Guid id,
         ClaimsPrincipal principal,
         AppDbContext db,
         IPortainerClient portainerClient,
         IConfiguration configuration,
+        IAuditLogger auditLogger,
         CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
+
         var application = await db.Applications
             .Include(a => a.Product)
             .Include(a => a.User)
@@ -265,14 +323,24 @@ public static class ApplicationsEndpoints
         }
 
         var result = await portainerClient.StopStackAsync(application.PortainerStackId.Value, application.PortainerEndpointId, ct);
+        sw.Stop();
         if (!result.Success)
         {
+            await auditLogger.RecordAsync(
+                principal, "Application", "Stop", application.Id, parameters: null, result: null,
+                sw.Elapsed, success: false, errorMessage: result.ErrorMessage);
+
             return Results.Json(new { message = "No se pudo parar la aplicación.", error = result.ErrorMessage }, statusCode: StatusCodes.Status502BadGateway);
         }
 
         application.Status = ApplicationStatus.Stopped;
         application.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
+
+        await auditLogger.RecordAsync(
+            principal, "Application", "Stop", application.Id,
+            parameters: null, result: new { application.Subdomain },
+            sw.Elapsed, success: true);
 
         return Results.Ok(ToResponse(application, GetBaseDomain(configuration)));
     }
@@ -283,8 +351,11 @@ public static class ApplicationsEndpoints
         AppDbContext db,
         IPortainerClient portainerClient,
         IConfiguration configuration,
+        IAuditLogger auditLogger,
         CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
+
         var application = await db.Applications
             .Include(a => a.Product)
             .Include(a => a.User)
@@ -306,14 +377,24 @@ public static class ApplicationsEndpoints
         }
 
         var result = await portainerClient.StartStackAsync(application.PortainerStackId.Value, application.PortainerEndpointId, ct);
+        sw.Stop();
         if (!result.Success)
         {
+            await auditLogger.RecordAsync(
+                principal, "Application", "Start", application.Id, parameters: null, result: null,
+                sw.Elapsed, success: false, errorMessage: result.ErrorMessage);
+
             return Results.Json(new { message = "No se pudo iniciar la aplicación.", error = result.ErrorMessage }, statusCode: StatusCodes.Status502BadGateway);
         }
 
-        application.Status = ApplicationStatus.Running;
+        application.Status = await ResolveRunningStatusAsync(application.Subdomain, GetBaseDomain(configuration), ct);
         application.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
+
+        await auditLogger.RecordAsync(
+            principal, "Application", "Start", application.Id,
+            parameters: null, result: new { application.Subdomain },
+            sw.Elapsed, success: true);
 
         return Results.Ok(ToResponse(application, GetBaseDomain(configuration)));
     }
@@ -323,8 +404,11 @@ public static class ApplicationsEndpoints
         ClaimsPrincipal principal,
         AppDbContext db,
         IPortainerClient portainerClient,
+        IAuditLogger auditLogger,
         CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
+
         var application = await db.Applications.FirstOrDefaultAsync(a => a.Id == id, ct);
         if (application is null)
         {
@@ -341,14 +425,36 @@ public static class ApplicationsEndpoints
             var result = await portainerClient.DeleteStackAsync(application.PortainerStackId.Value, application.PortainerEndpointId, ct);
             if (!result.Success)
             {
+                sw.Stop();
+                await auditLogger.RecordAsync(
+                    principal, "Application", "Delete", application.Id, parameters: null, result: null,
+                    sw.Elapsed, success: false, errorMessage: result.ErrorMessage);
+
                 return Results.Json(new { message = "No se pudo borrar el stack en Portainer.", error = result.ErrorMessage }, statusCode: StatusCodes.Status502BadGateway);
             }
         }
 
+        var deletedSnapshot = new { application.Subdomain, application.ProductId, application.UserId };
+
         db.Applications.Remove(application);
         await db.SaveChangesAsync(ct);
+        sw.Stop();
+
+        await auditLogger.RecordAsync(
+            principal, "Application", "Delete", id,
+            parameters: null, result: deletedSnapshot,
+            sw.Elapsed, success: true);
 
         return Results.NoContent();
+    }
+
+    /// <summary>Sustituye los valores de las env vars marcadas como secretas en el schema del producto antes de auditarlas/loguearlas.</summary>
+    private static Dictionary<string, string> RedactEnvVars(
+        IReadOnlyDictionary<string, string> envVars,
+        List<EnvVarDefinition> schema)
+    {
+        var secretKeys = schema.Where(d => d.IsSecret).Select(d => d.Key).ToHashSet();
+        return envVars.ToDictionary(kv => kv.Key, kv => secretKeys.Contains(kv.Key) ? "***" : kv.Value);
     }
 
     private static string GetBaseDomain(IConfiguration configuration) =>

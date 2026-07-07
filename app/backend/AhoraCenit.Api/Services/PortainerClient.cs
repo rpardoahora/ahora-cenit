@@ -30,10 +30,13 @@ public interface IPortainerClient
         CancellationToken ct = default);
 
     /// <summary>
-    /// Queries Portainer for the current status of a stack and maps it to
-    /// our own <see cref="ApplicationStatus"/> representation.
+    /// Consulta el estado real de los contenedores Docker del stack (a través
+    /// del proxy de Portainer) y lo mapea a <see cref="ApplicationStatus"/>.
+    /// A diferencia del campo Status del propio stack de Portainer (que no se
+    /// actualiza si el contenedor se borra/para directamente en Docker), esto
+    /// refleja el estado real en el motor Docker.
     /// </summary>
-    Task<ApplicationStatus> GetStackStatusAsync(int stackId, int endpointId, CancellationToken ct = default);
+    Task<ApplicationStatus> GetStackStatusAsync(int stackId, int endpointId, string stackName, CancellationToken ct = default);
 
     Task<PortainerOperationResult> StartStackAsync(int stackId, int endpointId, CancellationToken ct = default);
 
@@ -111,8 +114,18 @@ public class PortainerClient : IPortainerClient
         }
     }
 
-    public async Task<ApplicationStatus> GetStackStatusAsync(int stackId, int endpointId, CancellationToken ct = default)
+    public async Task<ApplicationStatus> GetStackStatusAsync(int stackId, int endpointId, string stackName, CancellationToken ct = default)
     {
+        // Fuente de verdad: los contenedores Docker reales del stack (identificados por la
+        // label que docker compose asigna automáticamente), no el campo Status del stack de
+        // Portainer, que no se entera si alguien para/borra el contenedor fuera de la app.
+        var containersStatus = await TryGetStatusFromContainersAsync(endpointId, stackName, ct);
+        if (containersStatus is not null)
+        {
+            return containersStatus.Value;
+        }
+
+        // No se pudo consultar el motor Docker (p.ej. permisos): fallback al estado del stack.
         try
         {
             using var response = await _httpClient.GetAsync($"api/stacks/{stackId}", ct);
@@ -144,6 +157,43 @@ public class PortainerClient : IPortainerClient
         catch
         {
             return ApplicationStatus.Error;
+        }
+    }
+
+    private async Task<ApplicationStatus?> TryGetStatusFromContainersAsync(int endpointId, string stackName, CancellationToken ct)
+    {
+        try
+        {
+            var filters = JsonSerializer.Serialize(new Dictionary<string, string[]>
+            {
+                ["label"] = [$"com.docker.compose.project={stackName}"]
+            });
+
+            using var response = await _httpClient.GetAsync(
+                $"api/endpoints/{endpointId}/docker/containers/json?all=true&filters={Uri.EscapeDataString(filters)}",
+                ct);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var containers = await response.Content.ReadFromJsonAsync<List<DockerContainerSummaryDto>>(JsonOptions, ct);
+            if (containers is null)
+            {
+                return null;
+            }
+
+            if (containers.Count == 0)
+            {
+                return ApplicationStatus.Deleted;
+            }
+
+            return containers.Any(c => c.State == "running") ? ApplicationStatus.Running : ApplicationStatus.Stopped;
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -234,5 +284,11 @@ public class PortainerClient : IPortainerClient
 
         [JsonPropertyName("Status")]
         public int Status { get; set; }
+    }
+
+    private class DockerContainerSummaryDto
+    {
+        [JsonPropertyName("State")]
+        public string State { get; set; } = string.Empty;
     }
 }

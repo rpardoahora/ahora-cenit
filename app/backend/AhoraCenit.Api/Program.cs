@@ -8,6 +8,11 @@ using AhoraCenit.Api.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using OpenTelemetry.Exporter;
+using OpenTelemetry.Logs;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -24,7 +29,56 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 // --- Services ---
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
+builder.Services.AddSingleton<IAuditLogger, AuditLogger>();
 builder.Services.AddHttpClient<IPortainerClient, PortainerClient>();
+
+// --- OpenTelemetry (opcional): solo se activa si se define OTEL_EXPORTER_OTLP_ENDPOINT.
+// Pensado para exportar a OpenObserve (traces + metrics + logs unificados) vía OTLP/HTTP.
+var otlpEndpoint = builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"];
+if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+{
+    var otlpUser = builder.Configuration["OTEL_EXPORTER_OTLP_USER"];
+    var otlpPassword = builder.Configuration["OTEL_EXPORTER_OTLP_PASSWORD"];
+    var otlpHeaders = string.IsNullOrWhiteSpace(otlpUser)
+        ? null
+        : $"Authorization=Basic {Convert.ToBase64String(Encoding.UTF8.GetBytes($"{otlpUser}:{otlpPassword}"))}";
+    var otlpBaseEndpoint = otlpEndpoint.TrimEnd('/');
+
+    // OpenObserve espera una URL de ingesta por señal (.../v1/traces, .../v1/metrics,
+    // .../v1/logs), así que la componemos explícitamente en vez de confiar en el
+    // autosufijado del SDK.
+    void ConfigureOtlpExporter(OtlpExporterOptions otlp, string signal)
+    {
+        otlp.Endpoint = new Uri($"{otlpBaseEndpoint}/v1/{signal}");
+        otlp.Protocol = OtlpExportProtocol.HttpProtobuf;
+        if (otlpHeaders is not null)
+        {
+            otlp.Headers = otlpHeaders;
+        }
+    }
+
+    builder.Services.AddOpenTelemetry()
+        .ConfigureResource(resource => resource.AddService("ahora-cenit-api"))
+        .WithTracing(tracing => tracing
+            .AddSource(AuditLogger.ActivitySourceName)
+            .AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation()
+            .AddOtlpExporter(otlp => ConfigureOtlpExporter(otlp, "traces")))
+        .WithMetrics(metrics => metrics
+            .AddMeter(AuditLogger.MeterName)
+            .AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation()
+            .AddRuntimeInstrumentation()
+            .AddOtlpExporter(otlp => ConfigureOtlpExporter(otlp, "metrics")));
+
+    builder.Logging.AddOpenTelemetry(logging =>
+    {
+        logging.IncludeFormattedMessage = true;
+        logging.IncludeScopes = true;
+        logging.SetResourceBuilder(ResourceBuilder.CreateDefault().AddService("ahora-cenit-api"));
+        logging.AddOtlpExporter(otlp => ConfigureOtlpExporter(otlp, "logs"));
+    });
+}
 
 if (string.IsNullOrWhiteSpace(builder.Configuration["Smtp:Host"]))
 {
@@ -183,6 +237,7 @@ static async Task SeedProductsAsync(AppDbContext db)
         Name = "Nextcloud",
         Description = "Almacenamiento en la nube y colaboración de archivos, autoalojado.",
         ImageUrl = "https://upload.wikimedia.org/wikipedia/commons/6/60/Nextcloud_Logo.svg",
+        WebsiteUrl = "https://nextcloud.com",
         ComposeTemplate = """
             services:
               app:
@@ -212,6 +267,7 @@ static async Task SeedProductsAsync(AppDbContext db)
         Name = "whoami",
         Description = "Servidor HTTP mínimo que devuelve información de la petición y del contenedor. Útil para probar despliegues y enrutado.",
         ImageUrl = "https://upload.wikimedia.org/wikipedia/commons/1/1e/Traefik_Logo.svg",
+        WebsiteUrl = "https://github.com/traefik/whoami",
         ComposeTemplate = """
             services:
               app:

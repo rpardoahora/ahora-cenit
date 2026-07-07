@@ -60,6 +60,20 @@ export function ApplicationsListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientFilter])
 
+  // Mientras Traefik esté obteniendo el certificado de alguna app, sigue
+  // refrescando su estado sin que el usuario tenga que recargar la página.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setApplications((prev) => {
+        const provisioning = prev?.filter((a) => a.status === "Provisioning") ?? []
+        if (provisioning.length > 0) refreshStatuses(provisioning)
+        return prev
+      })
+    }, 4000)
+    return () => clearInterval(interval)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   async function handleStart(app: Application) {
     try {
       const updated = await applicationsApi.start(app.id)
@@ -150,7 +164,7 @@ export function ApplicationsListPage() {
                     <Button size="sm" variant="outline" render={<Link to={`/aplicaciones/${app.id}`} />}>
                       Ver
                     </Button>
-                    {app.status === "Running" ? (
+                    {app.status === "Running" || app.status === "Provisioning" ? (
                       <Button size="sm" variant="outline" onClick={() => handleStop(app)}>
                         Parar
                       </Button>

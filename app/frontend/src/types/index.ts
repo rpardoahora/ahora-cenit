@@ -55,6 +55,7 @@ export interface Product {
   name: string
   description: string
   imageUrl: string
+  websiteUrl: string
   composeTemplate: string
   envVarsSchema: EnvVarSchema[]
   isActive: boolean
@@ -62,7 +63,13 @@ export interface Product {
 
 export type ProductInput = Omit<Product, "id">
 
-export type ApplicationStatus = "Deploying" | "Running" | "Stopped" | "Error" | "Deleted"
+export type ApplicationStatus =
+  | "Deploying"
+  | "Provisioning"
+  | "Running"
+  | "Stopped"
+  | "Error"
+  | "Deleted"
 
 export interface Application {
   id: string
@@ -83,6 +90,11 @@ export interface Application {
 
 export interface DeploySuggestion {
   suggestedSubdomain: string
+}
+
+export interface DeployStats {
+  averageDeploySeconds: number | null
+  sampleCount: number
 }
 
 export interface CreateApplicationInput {

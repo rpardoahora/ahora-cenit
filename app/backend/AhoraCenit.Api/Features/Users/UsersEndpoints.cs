@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Claims;
 using AhoraCenit.Api.Contracts.Users;
 using AhoraCenit.Api.Data;
@@ -40,9 +41,13 @@ public static class UsersEndpoints
 
     private static async Task<IResult> CreateAsync(
         CreateUserRequest request,
+        ClaimsPrincipal principal,
         AppDbContext db,
+        IAuditLogger auditLogger,
         CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
+
         if (string.IsNullOrWhiteSpace(request.Email) ||
             string.IsNullOrWhiteSpace(request.Name) ||
             string.IsNullOrWhiteSpace(request.Password))
@@ -89,6 +94,13 @@ public static class UsersEndpoints
 
         db.Users.Add(user);
         await db.SaveChangesAsync(ct);
+        sw.Stop();
+
+        await auditLogger.RecordAsync(
+            principal, "User", "Create", user.Id,
+            parameters: new { user.Email, user.Name, Role = user.Role.ToString() },
+            result: new { user.Id, user.ClientSlug },
+            sw.Elapsed, success: true);
 
         return Results.Created($"/api/users/{user.Id}", ToResponse(user));
     }
@@ -96,9 +108,13 @@ public static class UsersEndpoints
     private static async Task<IResult> UpdateAsync(
         Guid id,
         UpdateUserRequest request,
+        ClaimsPrincipal principal,
         AppDbContext db,
+        IAuditLogger auditLogger,
         CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
+
         if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.Name))
         {
             return Results.BadRequest(new { message = "Email y nombre son obligatorios." });
@@ -131,10 +147,18 @@ public static class UsersEndpoints
             }
         }
 
+        var previousRole = user.Role.ToString();
         user.Email = normalizedEmail;
         user.Name = request.Name.Trim();
         user.Role = role;
         await db.SaveChangesAsync(ct);
+        sw.Stop();
+
+        await auditLogger.RecordAsync(
+            principal, "User", "Update", user.Id,
+            parameters: new { request.Email, request.Name, request.Role },
+            result: new { PreviousRole = previousRole, NewRole = user.Role.ToString() },
+            sw.Elapsed, success: true);
 
         return Results.Ok(ToResponse(user));
     }
@@ -142,9 +166,13 @@ public static class UsersEndpoints
     private static async Task<IResult> ResetPasswordAsync(
         Guid id,
         ResetUserPasswordRequest request,
+        ClaimsPrincipal principal,
         AppDbContext db,
+        IAuditLogger auditLogger,
         CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
+
         if (string.IsNullOrWhiteSpace(request.NewPassword) || request.NewPassword.Length < 8)
         {
             return Results.BadRequest(new { message = "La nueva contraseña debe tener al menos 8 caracteres." });
@@ -158,6 +186,13 @@ public static class UsersEndpoints
 
         user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.NewPassword);
         await db.SaveChangesAsync(ct);
+        sw.Stop();
+
+        await auditLogger.RecordAsync(
+            principal, "User", "ResetPassword", user.Id,
+            parameters: null,
+            result: new { user.Email },
+            sw.Elapsed, success: true);
 
         return Results.Ok(new { message = "Contraseña actualizada." });
     }
@@ -166,8 +201,11 @@ public static class UsersEndpoints
         Guid id,
         ClaimsPrincipal principal,
         AppDbContext db,
+        IAuditLogger auditLogger,
         CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
+
         if (principal.GetUserId() == id)
         {
             return Results.BadRequest(new { message = "No puedes eliminar tu propio usuario." });
@@ -197,8 +235,17 @@ public static class UsersEndpoints
             });
         }
 
+        var deletedSnapshot = new { user.Email, user.Name, Role = user.Role.ToString(), user.ClientSlug };
+
         db.Users.Remove(user);
         await db.SaveChangesAsync(ct);
+        sw.Stop();
+
+        await auditLogger.RecordAsync(
+            principal, "User", "Delete", id,
+            parameters: null,
+            result: deletedSnapshot,
+            sw.Elapsed, success: true);
 
         return Results.NoContent();
     }

@@ -13,6 +13,10 @@ import {
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 
+function openWebsitePopup(url: string) {
+  window.open(url, "_blank", "noopener,noreferrer,width=1100,height=800")
+}
+
 export function CatalogPage() {
   const { user } = useAuth()
   const navigate = useNavigate()
@@ -59,7 +63,7 @@ export function CatalogPage() {
       {products && products.length > 0 && (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {products.map((product) => (
-            <Card key={product.id} className="overflow-hidden">
+            <Card key={product.id} className="h-full overflow-hidden">
               <div className="flex h-40 w-full items-center justify-center bg-muted/30 p-6">
                 <img
                   src={product.imageUrl}
@@ -67,14 +71,23 @@ export function CatalogPage() {
                   className="max-h-full max-w-full object-contain"
                 />
               </div>
-              <CardHeader>
+              <CardHeader className="flex-1">
                 <CardTitle>{product.name}</CardTitle>
                 <CardDescription className="line-clamp-3">
                   {product.description}
                 </CardDescription>
               </CardHeader>
-              <CardFooter>
-                <Button className="w-full" onClick={() => handleInstall(product.id)}>
+              <CardFooter className="gap-2">
+                {product.websiteUrl && (
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => openWebsitePopup(product.websiteUrl)}
+                  >
+                    Más info
+                  </Button>
+                )}
+                <Button className="flex-1" onClick={() => handleInstall(product.id)}>
                   Instalar
                 </Button>
               </CardFooter>

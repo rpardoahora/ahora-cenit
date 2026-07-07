@@ -8,6 +8,8 @@ networks:
 volumes:
   cenit_sqlserver_data:
     name: cenit_sqlserver_data
+  cenit_openobserve_data:
+    name: cenit_openobserve_data
 
 services:
   sqlserver:
@@ -52,6 +54,12 @@ services:
       Smtp__User: ${SMTP_USER}
       Smtp__Password: ${SMTP_PASSWORD}
       Smtp__From: ${SMTP_FROM}
+      # Vacío por defecto: la auditoría (alta/baja/cambios de Usuario, Producto y
+      # Aplicación) solo se exporta a OpenTelemetry (traces+metrics+logs) si se
+      # rellena esta variable, p.ej. OTEL_EXPORTER_OTLP_ENDPOINT=http://openobserve:5080/api/default
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_USER: ${OPENOBSERVE_ROOT_EMAIL:-}
+      OTEL_EXPORTER_OTLP_PASSWORD: ${OPENOBSERVE_ROOT_PASSWORD:-}
     networks:
       - cenit_internal
       - proxy
@@ -63,3 +71,24 @@ services:
       - traefik.http.services.app.loadbalancer.server.port=8080
       - traefik.http.routers.app.rule=Host(`${DOMAIN}`)
       - traefik.http.routers.app.entrypoints=web
+
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:latest
+    container_name: openobserve
+    restart: unless-stopped
+    environment:
+      ZO_ROOT_USER_EMAIL: ${OPENOBSERVE_ROOT_EMAIL}
+      ZO_ROOT_USER_PASSWORD: ${OPENOBSERVE_ROOT_PASSWORD}
+    volumes:
+      - cenit_openobserve_data:/data
+    networks:
+      - cenit_internal
+      - proxy
+    ports:
+      - "5080:5080" # UI + API, acceso directo en dev
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.services.openobserve.loadbalancer.server.port=5080
+      - traefik.http.routers.openobserve.rule=Host(`observe.${DOMAIN}`)
+      - traefik.http.routers.openobserve.entrypoints=web

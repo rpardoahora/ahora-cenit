@@ -10,6 +10,9 @@ public class Product
 
     public string ImageUrl { get; set; } = string.Empty;
 
+    /// <summary>Web pública del producto (p.ej. su sitio oficial), mostrada en el catálogo.</summary>
+    public string WebsiteUrl { get; set; } = string.Empty;
+
     /// <summary>
     /// Docker compose YAML template with ${VAR} placeholders. Not validated
     /// by the backend beyond being stored as-is.

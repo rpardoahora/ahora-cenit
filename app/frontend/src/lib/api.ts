@@ -7,6 +7,7 @@ import type {
   CreateApplicationInput,
   CreateUserInput,
   DeploySuggestion,
+  DeployStats,
   MessageResponse,
   Product,
   ProductInput,
@@ -142,6 +143,8 @@ export const productsApi = {
     request<DeploySuggestion>(`/products/${id}/suggest-subdomain`, {
       silent: true,
     }),
+  deployStats: (id: string) =>
+    request<DeployStats>(`/products/${id}/deploy-stats`, { silent: true }),
 }
 
 // ---------- Users (admin) ----------

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Claims;
 using System.Text.Json;
 using AhoraCenit.Api.Contracts.Products;
@@ -17,6 +18,7 @@ public static class ProductsEndpoints
         group.MapGet("/", ListAsync).AllowAnonymous();
         group.MapGet("/{id:guid}", GetByIdAsync).AllowAnonymous();
         group.MapGet("/{id:guid}/suggest-subdomain", SuggestSubdomainAsync).RequireAuthorization();
+        group.MapGet("/{id:guid}/deploy-stats", GetDeployStatsAsync).RequireAuthorization();
         group.MapPost("/", CreateAsync).RequireAuthorization("AdminOnly");
         group.MapPut("/{id:guid}", UpdateAsync).RequireAuthorization("AdminOnly");
         group.MapPatch("/{id:guid}/active", SetActiveAsync).RequireAuthorization("AdminOnly");
@@ -93,11 +95,34 @@ public static class ProductsEndpoints
         return Results.Ok(new SuggestSubdomainResponse(suggested));
     }
 
-    private static async Task<IResult> CreateAsync(
-        CreateProductRequest request,
+    /// <summary>Cuántas muestras recientes se usan para estimar la duración del próximo despliegue.</summary>
+    private const int DeployStatsSampleWindow = 5;
+
+    private static async Task<IResult> GetDeployStatsAsync(
+        Guid id,
         AppDbContext db,
         CancellationToken ct)
     {
+        var durations = await db.DeploymentDurationSamples
+            .Where(s => s.ProductId == id)
+            .OrderByDescending(s => s.CreatedAt)
+            .Take(DeployStatsSampleWindow)
+            .Select(s => s.DurationSeconds)
+            .ToListAsync(ct);
+
+        var average = durations.Count > 0 ? durations.Average() : (double?)null;
+        return Results.Ok(new DeployStatsResponse(average, durations.Count));
+    }
+
+    private static async Task<IResult> CreateAsync(
+        CreateProductRequest request,
+        ClaimsPrincipal principal,
+        AppDbContext db,
+        IAuditLogger auditLogger,
+        CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+
         if (string.IsNullOrWhiteSpace(request.Name) || string.IsNullOrWhiteSpace(request.ComposeTemplate))
         {
             return Results.BadRequest(new { message = "Name y ComposeTemplate son obligatorios." });
@@ -108,6 +133,7 @@ public static class ProductsEndpoints
             Name = request.Name.Trim(),
             Description = request.Description?.Trim() ?? string.Empty,
             ImageUrl = request.ImageUrl?.Trim() ?? string.Empty,
+            WebsiteUrl = request.WebsiteUrl?.Trim() ?? string.Empty,
             ComposeTemplate = request.ComposeTemplate,
             EnvVarsSchemaJson = SerializeSchema(request.EnvVarsSchema),
             IsActive = request.IsActive
@@ -115,6 +141,13 @@ public static class ProductsEndpoints
 
         db.Products.Add(product);
         await db.SaveChangesAsync(ct);
+        sw.Stop();
+
+        await auditLogger.RecordAsync(
+            principal, "Product", "Create", product.Id,
+            parameters: new { request.Name, request.Description, request.WebsiteUrl, request.IsActive, EnvVarsSchema = RedactSchema(request.EnvVarsSchema) },
+            result: new { product.Id },
+            sw.Elapsed, success: true);
 
         return Results.Created($"/api/products/{product.Id}", ToResponse(product));
     }
@@ -122,9 +155,13 @@ public static class ProductsEndpoints
     private static async Task<IResult> UpdateAsync(
         Guid id,
         UpdateProductRequest request,
+        ClaimsPrincipal principal,
         AppDbContext db,
+        IAuditLogger auditLogger,
         CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
+
         var product = await db.Products.FindAsync([id], ct);
         if (product is null)
         {
@@ -139,11 +176,19 @@ public static class ProductsEndpoints
         product.Name = request.Name.Trim();
         product.Description = request.Description?.Trim() ?? string.Empty;
         product.ImageUrl = request.ImageUrl?.Trim() ?? string.Empty;
+        product.WebsiteUrl = request.WebsiteUrl?.Trim() ?? string.Empty;
         product.ComposeTemplate = request.ComposeTemplate;
         product.EnvVarsSchemaJson = SerializeSchema(request.EnvVarsSchema);
         product.UpdatedAt = DateTime.UtcNow;
 
         await db.SaveChangesAsync(ct);
+        sw.Stop();
+
+        await auditLogger.RecordAsync(
+            principal, "Product", "Update", product.Id,
+            parameters: new { request.Name, request.Description, request.WebsiteUrl, EnvVarsSchema = RedactSchema(request.EnvVarsSchema) },
+            result: new { product.Id, product.UpdatedAt },
+            sw.Elapsed, success: true);
 
         return Results.Ok(ToResponse(product));
     }
@@ -151,24 +196,43 @@ public static class ProductsEndpoints
     private static async Task<IResult> SetActiveAsync(
         Guid id,
         SetProductActiveRequest request,
+        ClaimsPrincipal principal,
         AppDbContext db,
+        IAuditLogger auditLogger,
         CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
+
         var product = await db.Products.FindAsync([id], ct);
         if (product is null)
         {
             return Results.NotFound();
         }
 
+        var previousIsActive = product.IsActive;
         product.IsActive = request.IsActive;
         product.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
+        sw.Stop();
+
+        await auditLogger.RecordAsync(
+            principal, "Product", "SetActive", product.Id,
+            parameters: new { request.IsActive },
+            result: new { Previous = previousIsActive, Current = product.IsActive },
+            sw.Elapsed, success: true);
 
         return Results.Ok(ToResponse(product));
     }
 
-    private static async Task<IResult> DeleteAsync(Guid id, AppDbContext db, CancellationToken ct)
+    private static async Task<IResult> DeleteAsync(
+        Guid id,
+        ClaimsPrincipal principal,
+        AppDbContext db,
+        IAuditLogger auditLogger,
+        CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
+
         var product = await db.Products.FindAsync([id], ct);
         if (product is null)
         {
@@ -184,11 +248,24 @@ public static class ProductsEndpoints
             });
         }
 
+        var deletedSnapshot = new { product.Name };
+
         db.Products.Remove(product);
         await db.SaveChangesAsync(ct);
+        sw.Stop();
+
+        await auditLogger.RecordAsync(
+            principal, "Product", "Delete", id,
+            parameters: null,
+            result: deletedSnapshot,
+            sw.Elapsed, success: true);
 
         return Results.NoContent();
     }
+
+    /// <summary>Sustituye el valor por defecto de las variables marcadas como secretas antes de auditarlas/loguearlas.</summary>
+    private static object? RedactSchema(List<EnvVarDefinitionDto>? schema) =>
+        schema?.Select(d => new { d.Key, d.Label, DefaultValue = d.IsSecret ? "***" : d.DefaultValue, d.IsSecret });
 
     private static string SerializeSchema(List<EnvVarDefinitionDto>? schema)
     {
@@ -226,6 +303,7 @@ public static class ProductsEndpoints
             product.Name,
             product.Description,
             product.ImageUrl,
+            product.WebsiteUrl,
             product.ComposeTemplate,
             schema,
             product.IsActive,

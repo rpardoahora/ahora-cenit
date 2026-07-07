@@ -12,5 +12,12 @@ public enum ApplicationStatus
     Running = 1,
     Stopped = 2,
     Error = 3,
-    Deleted = 4
+    Deleted = 4,
+
+    /// <summary>
+    /// El contenedor ya está arriba, pero Traefik todavía no ha emitido/servido
+    /// el certificado TLS del subdominio (solo aplica cuando BaseDomain no es
+    /// un dominio local de desarrollo).
+    /// </summary>
+    Provisioning = 5
 }

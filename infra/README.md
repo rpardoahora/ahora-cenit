@@ -44,9 +44,12 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 
 Cada push a `main` (o tag `v*`) construye y publica la imagen de la app en
 `ghcr.io/rpardoahora/ahora-cenit` (ver `.github/workflows/docker-build.yml`).
-`docker-compose-cenit.yml` levanta ese stack (sqlserver + app) usando esa
-imagen ya construida, sin necesitar el código fuente en el host. Copia
-`.env.cenit.example` a `.env.cenit` y rellénalo:
+`docker-compose-cenit.yml` levanta ese stack (sqlserver + app + OpenObserve)
+usando esa imagen ya construida, sin necesitar el código fuente en el host.
+Copia `.env.cenit.example` a `.env.cenit` y rellénalo (incluye
+`OPENOBSERVE_ROOT_EMAIL`/`OPENOBSERVE_ROOT_PASSWORD`, credenciales del panel
+de OpenObserve, y `OTEL_EXPORTER_OTLP_ENDPOINT`, vacío si no quieres exportar
+la auditoría como traces+metrics+logs — ver `../app/README.md#auditoría`):
 
 ```bash
 docker compose --env-file .env.cenit -f docker-compose-cenit.yml pull

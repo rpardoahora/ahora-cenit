@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react"
+import { useEffect, useRef, useState, type FormEvent } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import { toast } from "sonner"
 import { productsApi, applicationsApi, ApiError } from "@/lib/api"
@@ -14,6 +14,10 @@ import {
 } from "@/components/ui/card"
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Progress } from "@/components/ui/progress"
+
+/** Estimación a usar mientras no haya despliegues previos de este producto. */
+const DEFAULT_ESTIMATE_SECONDS = 20
 
 export function DeployPage() {
   const { productId } = useParams<{ productId: string }>()
@@ -24,6 +28,9 @@ export function DeployPage() {
   const [subdomain, setSubdomain] = useState("")
   const [envVars, setEnvVars] = useState<Record<string, string>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [estimateSeconds, setEstimateSeconds] = useState(DEFAULT_ESTIMATE_SECONDS)
+  const [progress, setProgress] = useState(0)
+  const progressInterval = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
     if (!productId) return
@@ -47,6 +54,15 @@ export function DeployPage() {
         } catch {
           // backend suggestion unavailable, leave subdomain empty for manual entry
         }
+
+        try {
+          const stats = await productsApi.deployStats(productId!)
+          if (!cancelled && stats.averageDeploySeconds) {
+            setEstimateSeconds(stats.averageDeploySeconds)
+          }
+        } catch {
+          // sin estadísticas todavía, se usa la estimación por defecto
+        }
       } catch {
         if (!cancelled) toast.error("No se pudo cargar el producto.")
       } finally {
@@ -60,16 +76,32 @@ export function DeployPage() {
     }
   }, [productId])
 
+  useEffect(() => {
+    return () => {
+      if (progressInterval.current) clearInterval(progressInterval.current)
+    }
+  }, [])
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     if (!productId) return
     setIsSubmitting(true)
+    setProgress(0)
+
+    const startedAt = Date.now()
+    progressInterval.current = setInterval(() => {
+      const elapsedSeconds = (Date.now() - startedAt) / 1000
+      // Avanza hasta el 90% en el tiempo estimado; el último tramo espera a la respuesta real.
+      setProgress(Math.min(90, (elapsedSeconds / estimateSeconds) * 90))
+    }, 200)
+
     try {
       const application = await applicationsApi.create({
         productId,
         subdomain,
         envVars,
       })
+      setProgress(100)
       toast.success("Despliegue iniciado.")
       navigate(`/aplicaciones/${application.id}`)
     } catch (err) {
@@ -77,6 +109,7 @@ export function DeployPage() {
         toast.error("No se pudo iniciar el despliegue.")
       }
     } finally {
+      if (progressInterval.current) clearInterval(progressInterval.current)
       setIsSubmitting(false)
     }
   }
@@ -115,7 +148,9 @@ export function DeployPage() {
                 />
                 <FieldDescription>
                   Tu aplicación estará disponible en{" "}
-                  <code>{subdomain || "<subdominio>"}.ahoracenit.localhost</code>
+                  <code>
+                    {subdomain || "<subdominio>"}.{window.location.hostname}
+                  </code>
                 </FieldDescription>
               </Field>
 
@@ -142,6 +177,15 @@ export function DeployPage() {
                       </div>
                     ))}
                   </div>
+                </Field>
+              )}
+
+              {isSubmitting && (
+                <Field>
+                  <Progress value={progress} />
+                  <FieldDescription>
+                    Desplegando... normalmente tarda unos {Math.round(estimateSeconds)}s.
+                  </FieldDescription>
                 </Field>
               )}
 
