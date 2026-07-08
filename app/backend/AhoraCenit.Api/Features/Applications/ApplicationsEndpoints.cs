@@ -496,7 +496,7 @@ public static class ApplicationsEndpoints
 
         if (application.PortainerStackId is not null)
         {
-            var result = await portainerClient.DeleteStackAsync(application.PortainerStackId.Value, application.PortainerEndpointId, ct);
+            var result = await portainerClient.DeleteStackAsync(application.PortainerStackId.Value, application.PortainerEndpointId, application.Subdomain, ct);
             if (!result.Success)
             {
                 sw.Stop();

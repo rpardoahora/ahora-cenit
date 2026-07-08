@@ -56,7 +56,12 @@ public interface IPortainerClient
 
     Task<PortainerOperationResult> StopStackAsync(int stackId, int endpointId, CancellationToken ct = default);
 
-    Task<PortainerOperationResult> DeleteStackAsync(int stackId, int endpointId, CancellationToken ct = default);
+    /// <summary>
+    /// Borra el stack y, además, los volúmenes con nombre creados por su compose (Portainer
+    /// solo hace el equivalente a "docker compose down", que no se lleva los volúmenes, y
+    /// eso deja huérfanos los datos de la aplicación borrada).
+    /// </summary>
+    Task<PortainerOperationResult> DeleteStackAsync(int stackId, int endpointId, string stackName, CancellationToken ct = default);
 
     /// <summary>
     /// Suma el consumo de CPU/RAM/disco de todos los contenedores del stack,
@@ -404,7 +409,7 @@ public class PortainerClient : IPortainerClient
         }
     }
 
-    public async Task<PortainerOperationResult> DeleteStackAsync(int stackId, int endpointId, CancellationToken ct = default)
+    public async Task<PortainerOperationResult> DeleteStackAsync(int stackId, int endpointId, string stackName, CancellationToken ct = default)
     {
         try
         {
@@ -414,12 +419,56 @@ public class PortainerClient : IPortainerClient
                 var body = await response.Content.ReadAsStringAsync(ct);
                 return new PortainerOperationResult(false, $"Portainer respondió {(int)response.StatusCode}: {body}");
             }
-
-            return new PortainerOperationResult(true, null);
         }
         catch (Exception ex)
         {
             return new PortainerOperationResult(false, ex.Message);
+        }
+
+        // El borrado del stack ya se ha confirmado en este punto: el de los volúmenes es un
+        // best-effort de limpieza que no debe hacer fallar la operación si Docker no responde.
+        await DeleteStackVolumesAsync(endpointId, stackName, ct);
+
+        return new PortainerOperationResult(true, null);
+    }
+
+    /// <summary>Borra los volúmenes con nombre (no externos) que docker compose creó para este stack.</summary>
+    private async Task DeleteStackVolumesAsync(int endpointId, string stackName, CancellationToken ct)
+    {
+        try
+        {
+            var filters = JsonSerializer.Serialize(new Dictionary<string, string[]>
+            {
+                ["label"] = [$"com.docker.compose.project={stackName}"]
+            });
+
+            using var listResponse = await _httpClient.GetAsync(
+                $"api/endpoints/{endpointId}/docker/volumes?filters={Uri.EscapeDataString(filters)}",
+                ct);
+
+            if (!listResponse.IsSuccessStatusCode)
+            {
+                return;
+            }
+
+            var payload = await listResponse.Content.ReadFromJsonAsync<DockerVolumesListDto>(JsonOptions, ct);
+            foreach (var volume in payload?.Volumes ?? [])
+            {
+                try
+                {
+                    await _httpClient.DeleteAsync(
+                        $"api/endpoints/{endpointId}/docker/volumes/{Uri.EscapeDataString(volume.Name)}?force=true",
+                        ct);
+                }
+                catch
+                {
+                    // Si falla el borrado de un volumen concreto, seguimos con el resto.
+                }
+            }
+        }
+        catch
+        {
+            // No bloqueamos el borrado de la aplicación si no se pudieron limpiar los volúmenes.
         }
     }
 
@@ -465,6 +514,18 @@ public class PortainerClient : IPortainerClient
 
         [JsonPropertyName("State")]
         public string State { get; set; } = string.Empty;
+    }
+
+    private class DockerVolumesListDto
+    {
+        [JsonPropertyName("Volumes")]
+        public List<DockerVolumeSummaryDto>? Volumes { get; set; }
+    }
+
+    private class DockerVolumeSummaryDto
+    {
+        [JsonPropertyName("Name")]
+        public string Name { get; set; } = string.Empty;
     }
 
     private class DockerContainerInspectDto
