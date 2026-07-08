@@ -8,6 +8,13 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
   Card,
   CardContent,
   CardDescription,
@@ -20,6 +27,13 @@ import { Skeleton } from "@/components/ui/skeleton"
 interface EnvVarRow extends EnvVarSchema {
   rowId: number
 }
+
+const ENV_VAR_MODE_OPTIONS: { value: EnvVarSchema["mode"]; label: string; description: string }[] = [
+  { value: "Text", label: "Texto libre", description: "El usuario la ve y la edita como texto" },
+  { value: "Secret", label: "Secreto", description: "El usuario la ve y la edita, pero enmascarada" },
+  { value: "ReadOnly", label: "Solo lectura", description: "El usuario la ve pero no puede editarla" },
+  { value: "Hidden", label: "Oculta", description: "El usuario no la ve ni puede editarla" },
+]
 
 export function ProductFormPage() {
   const { id } = useParams<{ id: string }>()
@@ -62,7 +76,7 @@ export function ProductFormPage() {
   function addEnvVar() {
     setEnvVars((prev) => [
       ...prev,
-      { rowId: nextRowId.current++, key: "", label: "", defaultValue: "", isSecret: false },
+      { rowId: nextRowId.current++, key: "", label: "", defaultValue: "", mode: "Text" },
     ])
   }
 
@@ -237,18 +251,27 @@ export function ProductFormPage() {
                         />
                       </div>
                       <div className="flex items-end justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <Switch
-                            id={`secret-${envVar.rowId}`}
-                            size="sm"
-                            checked={envVar.isSecret}
-                            onCheckedChange={(checked) =>
-                              updateEnvVar(envVar.rowId, { isSecret: checked })
-                            }
-                          />
-                          <FieldLabel htmlFor={`secret-${envVar.rowId}`} className="text-xs">
-                            Es secreto
+                        <div className="flex flex-col gap-1">
+                          <FieldLabel htmlFor={`mode-${envVar.rowId}`} className="text-xs">
+                            Visibilidad
                           </FieldLabel>
+                          <Select
+                            value={envVar.mode}
+                            onValueChange={(value) =>
+                              updateEnvVar(envVar.rowId, { mode: value as EnvVarSchema["mode"] })
+                            }
+                          >
+                            <SelectTrigger id={`mode-${envVar.rowId}`} size="sm">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {ENV_VAR_MODE_OPTIONS.map((option) => (
+                                <SelectItem key={option.value} value={option.value}>
+                                  {option.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
                         </div>
                         <Button
                           type="button"

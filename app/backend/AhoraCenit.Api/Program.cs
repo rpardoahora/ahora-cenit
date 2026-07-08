@@ -30,7 +30,14 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 // --- Services ---
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddSingleton<IAuditLogger, AuditLogger>();
-builder.Services.AddHttpClient<IPortainerClient, PortainerClient>();
+builder.Services.AddHttpClient<IPortainerClient, PortainerClient>(client =>
+{
+    // Crear un stack implica que Portainer ejecute "docker compose up", incluyendo el pull
+    // de imágenes: para productos con imágenes grandes (p.ej. SQL Server) puede tardar bastante
+    // más que el timeout por defecto de HttpClient (100s). Si expira antes de que Portainer
+    // responda, el despliegue se marca como error aunque el stack se acabe creando igualmente.
+    client.Timeout = TimeSpan.FromMinutes(15);
+});
 
 // --- OpenTelemetry (opcional): solo se activa si se define OTEL_EXPORTER_OTLP_ENDPOINT.
 // Pensado para exportar a OpenObserve (traces + metrics + logs unificados) vía OTLP/HTTP.
@@ -261,8 +268,8 @@ static async Task SeedProductsAsync(AppDbContext db)
             """,
         EnvVarsSchemaJson = SerializeSchema(
         [
-            new EnvVarDefinition { Key = "NEXTCLOUD_ADMIN_USER", Label = "Usuario admin", DefaultValue = "admin", IsSecret = false },
-            new EnvVarDefinition { Key = "NEXTCLOUD_ADMIN_PASSWORD", Label = "Contraseña admin", DefaultValue = "changeme", IsSecret = true }
+            new EnvVarDefinition { Key = "NEXTCLOUD_ADMIN_USER", Label = "Usuario admin", DefaultValue = "admin", Mode = EnvVarInputMode.Text },
+            new EnvVarDefinition { Key = "NEXTCLOUD_ADMIN_PASSWORD", Label = "Contraseña admin", DefaultValue = "changeme", Mode = EnvVarInputMode.Secret }
         ])
     };
 
@@ -291,7 +298,7 @@ static async Task SeedProductsAsync(AppDbContext db)
             """,
         EnvVarsSchemaJson = SerializeSchema(
         [
-            new EnvVarDefinition { Key = "WHOAMI_NAME", Label = "Nombre mostrado", DefaultValue = "ahora-cenit-demo", IsSecret = false }
+            new EnvVarDefinition { Key = "WHOAMI_NAME", Label = "Nombre mostrado", DefaultValue = "ahora-cenit-demo", Mode = EnvVarInputMode.Text }
         ])
     };
 

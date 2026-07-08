@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import { toast } from "sonner"
 import { applicationsApi, ApiError } from "@/lib/api"
@@ -47,25 +47,22 @@ export function ApplicationDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
-  // Mientras Traefik está obteniendo el certificado, refresca solo el estado
-  // periódicamente para que la app pase a "En ejecución" sin recargar a mano.
-  const pollAttempts = useRef(0)
+  // Mientras el estado no sea definitivo (desplegando, obteniendo certificado, o marcada
+  // como error) seguimos refrescando solos, sin que el usuario tenga que pulsar "Refrescar":
+  // un despliegue lento puede haberse marcado como error por timeout aunque en Portainer
+  // haya terminado bien, y el próximo refresco automático lo recupera solo.
   useEffect(() => {
-    if (!id || application?.status !== "Provisioning") {
-      pollAttempts.current = 0
+    const pollableStatuses = ["Deploying", "Provisioning", "Error"]
+    if (!id || !application || !pollableStatuses.includes(application.status)) {
       return
     }
 
     const interval = setInterval(async () => {
-      pollAttempts.current += 1
       try {
         const { status } = await applicationsApi.status(id)
         setApplication((prev) => (prev ? { ...prev, status } : prev))
       } catch {
         // se reintenta en el próximo tick
-      }
-      if (pollAttempts.current >= 15) {
-        clearInterval(interval)
       }
     }, 4000)
 
@@ -164,6 +161,20 @@ export function ApplicationDetailPage() {
             <p className="text-sm text-muted-foreground">
               El contenedor ya está en marcha; Traefik está emitiendo el certificado HTTPS
               del dominio. Puede tardar hasta un minuto.
+            </p>
+          )}
+
+          {application.status === "Deploying" && (
+            <p className="text-sm text-muted-foreground">
+              El despliegue sigue en curso. Esta página se actualiza sola en cuanto cambie
+              el estado.
+            </p>
+          )}
+
+          {application.status === "Error" && (
+            <p className="text-sm text-muted-foreground">
+              Seguimos comprobando el estado real en Portainer: si el despliegue tardó más
+              de lo previsto pero terminó bien, el estado se corregirá solo en unos segundos.
             </p>
           )}
 

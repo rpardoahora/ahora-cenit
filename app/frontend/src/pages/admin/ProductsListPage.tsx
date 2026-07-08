@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState, type ChangeEvent } from "react"
 import { Link } from "react-router-dom"
 import { toast } from "sonner"
 import { productsApi, ApiError } from "@/lib/api"
-import type { Product } from "@/types"
+import type { ProductExportEnvelope, Product } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
@@ -19,6 +19,8 @@ import { ConfirmDialog } from "@/components/ConfirmDialog"
 
 export function ProductsListPage() {
   const [products, setProducts] = useState<Product[] | null>(null)
+  const [isImporting, setIsImporting] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   async function load() {
     try {
@@ -53,6 +55,66 @@ export function ProductsListPage() {
     }
   }
 
+  async function handleExport() {
+    try {
+      const envelope = await productsApi.exportAll()
+      const blob = new Blob([JSON.stringify(envelope, null, 2)], {
+        type: "application/json",
+      })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = `productos-${new Date().toISOString().slice(0, 10)}.json`
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      if (!(err instanceof ApiError)) toast.error("No se pudo exportar el catálogo de productos.")
+    }
+  }
+
+  function handleImportClick() {
+    fileInputRef.current?.click()
+  }
+
+  async function handleImportFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ""
+    if (!file) return
+
+    setIsImporting(true)
+    try {
+      const text = await file.text()
+      let envelope: ProductExportEnvelope
+      try {
+        envelope = JSON.parse(text)
+      } catch {
+        toast.error("El fichero seleccionado no es un JSON válido.")
+        return
+      }
+
+      const result = await productsApi.importAll(envelope)
+      const { created, updated, errors } = result
+
+      if (created.length > 0 || updated.length > 0) {
+        toast.success(
+          `Importación completada: ${created.length} creado(s), ${updated.length} actualizado(s).`
+        )
+      }
+      if (errors.length > 0) {
+        errors.forEach((e) => toast.error(`${e.name}: ${e.reason}`))
+      }
+      if (created.length === 0 && updated.length === 0 && errors.length === 0) {
+        toast.error("El fichero no contenía productos para importar.")
+      }
+
+      await load()
+    } catch (err) {
+      if (!(err instanceof ApiError)) toast.error("No se pudo importar el fichero de productos.")
+    } finally {
+      setIsImporting(false)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -62,7 +124,22 @@ export function ProductsListPage() {
             Gestiona el catálogo de aplicaciones dockerizadas.
           </p>
         </div>
-        <Button render={<Link to="/admin/productos/nuevo" />}>Nuevo producto</Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={handleImportFile}
+          />
+          <Button variant="outline" onClick={handleExport}>
+            Exportar productos
+          </Button>
+          <Button variant="outline" onClick={handleImportClick} disabled={isImporting}>
+            {isImporting ? "Importando..." : "Importar productos"}
+          </Button>
+          <Button render={<Link to="/admin/productos/nuevo" />}>Nuevo producto</Button>
+        </div>
       </div>
 
       {products === null && <Skeleton className="h-48 w-full" />}

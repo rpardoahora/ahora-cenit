@@ -60,13 +60,16 @@ export function ApplicationsListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientFilter])
 
-  // Mientras Traefik esté obteniendo el certificado de alguna app, sigue
-  // refrescando su estado sin que el usuario tenga que recargar la página.
+  // Mientras alguna app esté desplegándose, obteniendo el certificado, o marcada como
+  // error (que puede deberse a un timeout aunque el despliegue terminara bien en
+  // Portainer), sigue refrescando su estado sin que el usuario tenga que recargar la
+  // página ni pulsar nada.
+  const pollableStatuses = ["Deploying", "Provisioning", "Error"]
   useEffect(() => {
     const interval = setInterval(() => {
       setApplications((prev) => {
-        const provisioning = prev?.filter((a) => a.status === "Provisioning") ?? []
-        if (provisioning.length > 0) refreshStatuses(provisioning)
+        const pending = prev?.filter((a) => pollableStatuses.includes(a.status)) ?? []
+        if (pending.length > 0) refreshStatuses(pending)
         return prev
       })
     }, 4000)

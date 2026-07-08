@@ -31,6 +31,7 @@ export function DeployPage() {
   const [estimateSeconds, setEstimateSeconds] = useState(DEFAULT_ESTIMATE_SECONDS)
   const [baseDomain, setBaseDomain] = useState(window.location.hostname)
   const [progress, setProgress] = useState(0)
+  const [isOvertime, setIsOvertime] = useState(false)
   const progressInterval = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
@@ -94,13 +95,24 @@ export function DeployPage() {
     e.preventDefault()
     if (!productId) return
     setIsSubmitting(true)
+    setIsOvertime(false)
     setProgress(0)
 
     const startedAt = Date.now()
     progressInterval.current = setInterval(() => {
       const elapsedSeconds = (Date.now() - startedAt) / 1000
-      // Avanza hasta el 90% en el tiempo estimado; el último tramo espera a la respuesta real.
-      setProgress(Math.min(90, (elapsedSeconds / estimateSeconds) * 90))
+      if (elapsedSeconds <= estimateSeconds) {
+        // Avanza hasta el 95% en el tiempo estimado; el último tramo espera a la respuesta real.
+        setProgress(Math.min(95, (elapsedSeconds / estimateSeconds) * 95))
+        return
+      }
+
+      // Se ha superado la estimación: el despliegue puede seguir en curso perfectamente
+      // (p.ej. una imagen grande tardando en descargarse), así que no lo tratamos como un
+      // fallo. Seguimos avanzando muy despacio sin llegar nunca al 100% por nuestra cuenta;
+      // solo la respuesta real del servidor completa la barra o la corta con un error.
+      setIsOvertime(true)
+      setProgress((prev) => Math.min(99, prev + 0.3))
     }, 200)
 
     try {
@@ -135,6 +147,8 @@ export function DeployPage() {
     return <p className="text-sm text-muted-foreground">Producto no encontrado.</p>
   }
 
+  const visibleEnvVars = product.envVarsSchema.filter((envVar) => envVar.mode !== "Hidden")
+
   return (
     <div className="mx-auto max-w-lg">
       <Card>
@@ -162,19 +176,21 @@ export function DeployPage() {
                 </FieldDescription>
               </Field>
 
-              {product.envVarsSchema.length > 0 && (
+              {visibleEnvVars.length > 0 && (
                 <Field>
                   <FieldLabel>Variables de entorno</FieldLabel>
                   <div className="flex flex-col gap-4">
-                    {product.envVarsSchema.map((envVar) => (
+                    {visibleEnvVars.map((envVar) => (
                       <div key={envVar.key} className="flex flex-col gap-1.5">
                         <FieldLabel htmlFor={`env-${envVar.key}`}>
                           {envVar.label}
                         </FieldLabel>
                         <Input
                           id={`env-${envVar.key}`}
-                          type={envVar.isSecret ? "password" : "text"}
+                          type={envVar.mode === "Secret" ? "password" : "text"}
                           value={envVars[envVar.key] ?? ""}
+                          readOnly={envVar.mode === "ReadOnly"}
+                          disabled={envVar.mode === "ReadOnly"}
                           onChange={(e) =>
                             setEnvVars((prev) => ({
                               ...prev,
@@ -192,7 +208,9 @@ export function DeployPage() {
                 <Field>
                   <Progress value={progress} />
                   <FieldDescription>
-                    Desplegando... normalmente tarda unos {Math.round(estimateSeconds)}s.
+                    {isOvertime
+                      ? "El despliegue está tardando más de lo habitual, pero seguimos trabajando en ello. No cierres esta página."
+                      : `Desplegando... normalmente tarda unos ${Math.round(estimateSeconds)}s.`}
                   </FieldDescription>
                 </Field>
               )}

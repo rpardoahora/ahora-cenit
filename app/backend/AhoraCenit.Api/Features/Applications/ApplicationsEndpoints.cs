@@ -70,14 +70,26 @@ public static class ApplicationsEndpoints
             requestedSlugSource,
             slug => db.Applications.AnyAsync(a => a.Subdomain == slug, ct));
 
-        // Merge product schema defaults with the user's overrides.
+        // Merge product schema defaults with the user's overrides. Las variables de solo
+        // lectura u ocultas ignoran cualquier valor recibido: su valor siempre es el
+        // definido por el producto, aunque el cliente intente forzarlo por API.
         var schema = ProductsEndpoints.DeserializeSchema(product.EnvVarsSchemaJson);
         var mergedEnvVars = schema.ToDictionary(d => d.Key, d => d.DefaultValue);
 
         if (request.EnvVars is not null)
         {
+            var lockedKeys = schema
+                .Where(d => d.Mode is EnvVarInputMode.ReadOnly or EnvVarInputMode.Hidden)
+                .Select(d => d.Key)
+                .ToHashSet();
+
             foreach (var (key, value) in request.EnvVars)
             {
+                if (lockedKeys.Contains(key))
+                {
+                    continue;
+                }
+
                 mergedEnvVars[key] = value;
             }
         }
@@ -114,6 +126,19 @@ public static class ApplicationsEndpoints
             composeContent: product.ComposeTemplate,
             envVars: portainerEnvVars,
             ct: CancellationToken.None);
+
+        if (!result.Success)
+        {
+            // Nuestra llamada HTTP a Portainer puede hacer timeout (p.ej. una imagen grande
+            // tardando en descargarse) aunque el "docker compose up" siga corriendo ahí y
+            // termine creando el stack igualmente. Antes de dar el despliegue por fallido,
+            // comprobamos si el stack ya existe en Portainer con ese nombre.
+            var recoveredStackId = await portainerClient.FindStackIdByNameAsync(subdomain, CancellationToken.None);
+            if (recoveredStackId is not null)
+            {
+                result = result with { Success = true, StackId = recoveredStackId, ErrorMessage = null };
+            }
+        }
 
         var auditParameters = new
         {
@@ -286,7 +311,17 @@ public static class ApplicationsEndpoints
 
         if (application.PortainerStackId is null)
         {
-            return Results.Ok(ToResponse(application, baseDomain));
+            // El despliegue original puede haber marcado error por un timeout hablando con
+            // Portainer aunque el stack se creara igualmente al otro lado. Antes de devolver
+            // el estado guardado sin más, intentamos localizar el stack por nombre.
+            var recoveredStackId = await portainerClient.FindStackIdByNameAsync(application.Subdomain, ct);
+            if (recoveredStackId is null)
+            {
+                return Results.Ok(ToResponse(application, baseDomain));
+            }
+
+            application.PortainerStackId = recoveredStackId;
+            application.PortainerEndpointId = configuration.GetValue<int>("Portainer:EndpointId", 1);
         }
 
         var status = await portainerClient.GetStackStatusAsync(
@@ -295,12 +330,20 @@ public static class ApplicationsEndpoints
             application.Subdomain,
             ct);
 
+        if (status is null)
+        {
+            // No se pudo determinar el estado real (fallo transitorio de conectividad con
+            // Portainer): mantenemos el último estado conocido en lugar de asumir un error.
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(ToResponse(application, baseDomain));
+        }
+
         if (status == ApplicationStatus.Running)
         {
             status = await ResolveRunningStatusAsync(application.Subdomain, baseDomain, ct);
         }
 
-        application.Status = status;
+        application.Status = status.Value;
         application.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
 
@@ -479,13 +522,16 @@ public static class ApplicationsEndpoints
         return Results.NoContent();
     }
 
-    /// <summary>Sustituye los valores de las env vars marcadas como secretas en el schema del producto antes de auditarlas/loguearlas.</summary>
+    /// <summary>Sustituye los valores de las env vars marcadas como secretas u ocultas en el schema del producto antes de auditarlas/loguearlas.</summary>
     private static Dictionary<string, string> RedactEnvVars(
         IReadOnlyDictionary<string, string> envVars,
         List<EnvVarDefinition> schema)
     {
-        var secretKeys = schema.Where(d => d.IsSecret).Select(d => d.Key).ToHashSet();
-        return envVars.ToDictionary(kv => kv.Key, kv => secretKeys.Contains(kv.Key) ? "***" : kv.Value);
+        var maskedKeys = schema
+            .Where(d => d.Mode is EnvVarInputMode.Secret or EnvVarInputMode.Hidden)
+            .Select(d => d.Key)
+            .ToHashSet();
+        return envVars.ToDictionary(kv => kv.Key, kv => maskedKeys.Contains(kv.Key) ? "***" : kv.Value);
     }
 
     private static string GetBaseDomain(IConfiguration configuration) =>

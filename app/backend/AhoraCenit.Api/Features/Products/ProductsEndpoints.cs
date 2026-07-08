@@ -23,6 +23,8 @@ public static class ProductsEndpoints
         group.MapPut("/{id:guid}", UpdateAsync).RequireAuthorization("AdminOnly");
         group.MapPatch("/{id:guid}/active", SetActiveAsync).RequireAuthorization("AdminOnly");
         group.MapDelete("/{id:guid}", DeleteAsync).RequireAuthorization("AdminOnly");
+        group.MapGet("/export", ExportAsync).RequireAuthorization("AdminOnly");
+        group.MapPost("/import", ImportAsync).RequireAuthorization("AdminOnly");
 
         return group;
     }
@@ -263,9 +265,139 @@ public static class ProductsEndpoints
         return Results.NoContent();
     }
 
-    /// <summary>Sustituye el valor por defecto de las variables marcadas como secretas antes de auditarlas/loguearlas.</summary>
+    /// <summary>Versión del formato de export/import de productos; súbela si cambias la forma del envelope.</summary>
+    private const int ExportFormatVersion = 1;
+
+    private static async Task<IResult> ExportAsync(
+        ClaimsPrincipal principal,
+        AppDbContext db,
+        IAuditLogger auditLogger,
+        CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+
+        var products = await db.Products.OrderBy(p => p.Name).ToListAsync(ct);
+        var dtos = products.Select(ToExportDto).ToList();
+        var envelope = new ProductExportEnvelope(ExportFormatVersion, DateTime.UtcNow, dtos);
+        sw.Stop();
+
+        await auditLogger.RecordAsync(
+            principal, "Product", "Export", null,
+            parameters: null,
+            result: new { Count = dtos.Count },
+            sw.Elapsed, success: true);
+
+        return Results.Ok(envelope);
+    }
+
+    // Best-effort en vez de una única transacción: un fichero de export puede traer decenas de
+    // productos y no queremos que uno mal formado (o con un ComposeTemplate vacío) tire abajo la
+    // importación de los demás. Cada producto se procesa y persiste de forma independiente; el
+    // admin recibe un resumen con lo creado, lo actualizado y el motivo de cada fallo.
+    private static async Task<IResult> ImportAsync(
+        ProductExportEnvelope request,
+        ClaimsPrincipal principal,
+        AppDbContext db,
+        IAuditLogger auditLogger,
+        CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+
+        var created = new List<ImportedProductInfo>();
+        var updated = new List<ImportedProductInfo>();
+        var errors = new List<ImportProductError>();
+        var incoming = request.Products ?? [];
+
+        foreach (var dto in incoming)
+        {
+            var name = dto.Name?.Trim() ?? string.Empty;
+            var displayName = string.IsNullOrWhiteSpace(name) ? "(sin nombre)" : name;
+
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(dto.ComposeTemplate))
+            {
+                errors.Add(new ImportProductError(displayName, "Name y ComposeTemplate son obligatorios."));
+                continue;
+            }
+
+            try
+            {
+                var existing = await db.Products
+                    .FirstOrDefaultAsync(p => p.Name.ToLower() == name.ToLower(), ct);
+
+                if (existing is null)
+                {
+                    var product = new Product
+                    {
+                        Name = name,
+                        Description = dto.Description?.Trim() ?? string.Empty,
+                        ImageUrl = dto.ImageUrl?.Trim() ?? string.Empty,
+                        WebsiteUrl = dto.WebsiteUrl?.Trim() ?? string.Empty,
+                        ComposeTemplate = dto.ComposeTemplate,
+                        EnvVarsSchemaJson = SerializeSchema(dto.EnvVarsSchema),
+                        IsActive = dto.IsActive
+                    };
+
+                    db.Products.Add(product);
+                    await db.SaveChangesAsync(ct);
+                    created.Add(new ImportedProductInfo(product.Name, product.Id));
+                }
+                else
+                {
+                    existing.Description = dto.Description?.Trim() ?? string.Empty;
+                    existing.ImageUrl = dto.ImageUrl?.Trim() ?? string.Empty;
+                    existing.WebsiteUrl = dto.WebsiteUrl?.Trim() ?? string.Empty;
+                    existing.ComposeTemplate = dto.ComposeTemplate;
+                    existing.EnvVarsSchemaJson = SerializeSchema(dto.EnvVarsSchema);
+                    existing.IsActive = dto.IsActive;
+                    existing.UpdatedAt = DateTime.UtcNow;
+
+                    await db.SaveChangesAsync(ct);
+                    updated.Add(new ImportedProductInfo(existing.Name, existing.Id));
+                }
+            }
+            catch (Exception ex)
+            {
+                errors.Add(new ImportProductError(displayName, ex.Message));
+            }
+        }
+
+        sw.Stop();
+        var result = new ImportProductsResult(created, updated, errors);
+
+        await auditLogger.RecordAsync(
+            principal, "Product", "Import", null,
+            parameters: new { TotalCount = incoming.Count },
+            result: new { CreatedCount = created.Count, UpdatedCount = updated.Count, ErrorCount = errors.Count },
+            sw.Elapsed, success: errors.Count == 0);
+
+        return Results.Ok(result);
+    }
+
+    private static ProductExportDto ToExportDto(Product product)
+    {
+        var schema = DeserializeSchema(product.EnvVarsSchemaJson)
+            .Select(d => new EnvVarDefinitionDto(d.Key, d.Label, d.DefaultValue, d.Mode))
+            .ToList();
+
+        return new ProductExportDto(
+            product.Name,
+            product.Description,
+            product.ImageUrl,
+            product.WebsiteUrl,
+            product.ComposeTemplate,
+            schema,
+            product.IsActive);
+    }
+
+    /// <summary>Sustituye el valor por defecto de las variables marcadas como secretas u ocultas antes de auditarlas/loguearlas.</summary>
     private static object? RedactSchema(List<EnvVarDefinitionDto>? schema) =>
-        schema?.Select(d => new { d.Key, d.Label, DefaultValue = d.IsSecret ? "***" : d.DefaultValue, d.IsSecret });
+        schema?.Select(d => new
+        {
+            d.Key,
+            d.Label,
+            DefaultValue = d.Mode is EnvVarInputMode.Secret or EnvVarInputMode.Hidden ? "***" : d.DefaultValue,
+            d.Mode
+        });
 
     private static string SerializeSchema(List<EnvVarDefinitionDto>? schema)
     {
@@ -275,7 +407,7 @@ public static class ProductsEndpoints
                 Key = d.Key,
                 Label = d.Label,
                 DefaultValue = d.DefaultValue,
-                IsSecret = d.IsSecret
+                Mode = d.Mode
             })
             .ToList();
 
@@ -295,7 +427,7 @@ public static class ProductsEndpoints
     private static ProductResponse ToResponse(Product product)
     {
         var schema = DeserializeSchema(product.EnvVarsSchemaJson)
-            .Select(d => new EnvVarDefinitionDto(d.Key, d.Label, d.DefaultValue, d.IsSecret))
+            .Select(d => new EnvVarDefinitionDto(d.Key, d.Label, d.DefaultValue, d.Mode))
             .ToList();
 
         return new ProductResponse(

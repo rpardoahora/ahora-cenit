@@ -47,11 +47,13 @@ export interface MessageResponse {
   message: string
 }
 
+export type EnvVarInputMode = "Text" | "Secret" | "ReadOnly" | "Hidden"
+
 export interface EnvVarSchema {
   key: string
   label: string
   defaultValue: string
-  isSecret: boolean
+  mode: EnvVarInputMode
 }
 
 export interface Product {
@@ -66,6 +68,38 @@ export interface Product {
 }
 
 export type ProductInput = Omit<Product, "id">
+
+export interface ProductExportItem {
+  name: string
+  description: string
+  imageUrl: string
+  websiteUrl: string
+  composeTemplate: string
+  envVarsSchema: EnvVarSchema[]
+  isActive: boolean
+}
+
+export interface ProductExportEnvelope {
+  version: number
+  exportedAt: string
+  products: ProductExportItem[]
+}
+
+export interface ImportedProductInfo {
+  name: string
+  id: string
+}
+
+export interface ImportProductError {
+  name: string
+  reason: string
+}
+
+export interface ImportProductsResult {
+  created: ImportedProductInfo[]
+  updated: ImportedProductInfo[]
+  errors: ImportProductError[]
+}
 
 export type ApplicationStatus =
   | "Deploying"

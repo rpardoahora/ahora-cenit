@@ -10,8 +10,10 @@ import type {
   CreateUserInput,
   DeploySuggestion,
   DeployStats,
+  ImportProductsResult,
   MessageResponse,
   Product,
+  ProductExportEnvelope,
   ProductInput,
   RegisterResult,
   UpdateUserInput,
@@ -153,6 +155,9 @@ export const productsApi = {
     }),
   deployStats: (id: string) =>
     request<DeployStats>(`/products/${id}/deploy-stats`, { silent: true }),
+  exportAll: () => request<ProductExportEnvelope>("/products/export"),
+  importAll: (payload: ProductExportEnvelope) =>
+    request<ImportProductsResult>("/products/import", { method: "POST", body: payload }),
 }
 
 // ---------- Users (admin) ----------

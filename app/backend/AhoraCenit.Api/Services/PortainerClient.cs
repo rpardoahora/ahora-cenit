@@ -38,8 +38,19 @@ public interface IPortainerClient
     /// A diferencia del campo Status del propio stack de Portainer (que no se
     /// actualiza si el contenedor se borra/para directamente en Docker), esto
     /// refleja el estado real en el motor Docker.
+    /// Devuelve null si no se pudo determinar el estado (fallo de conectividad
+    /// transitorio con Portainer): en ese caso el llamador debe mantener el
+    /// último estado conocido en vez de asumir que la aplicación ha fallado.
     /// </summary>
-    Task<ApplicationStatus> GetStackStatusAsync(int stackId, int endpointId, string stackName, CancellationToken ct = default);
+    Task<ApplicationStatus?> GetStackStatusAsync(int stackId, int endpointId, string stackName, CancellationToken ct = default);
+
+    /// <summary>
+    /// Busca en Portainer un stack por nombre exacto (case-insensitive) y
+    /// devuelve su Id si existe. Se usa para recuperar aplicaciones cuya
+    /// creación se dio (incorrectamente) por fallida porque nuestra llamada
+    /// HTTP hizo timeout, aunque el stack se llegara a crear igualmente.
+    /// </summary>
+    Task<int?> FindStackIdByNameAsync(string stackName, CancellationToken ct = default);
 
     Task<PortainerOperationResult> StartStackAsync(int stackId, int endpointId, CancellationToken ct = default);
 
@@ -125,7 +136,7 @@ public class PortainerClient : IPortainerClient
         }
     }
 
-    public async Task<ApplicationStatus> GetStackStatusAsync(int stackId, int endpointId, string stackName, CancellationToken ct = default)
+    public async Task<ApplicationStatus?> GetStackStatusAsync(int stackId, int endpointId, string stackName, CancellationToken ct = default)
     {
         // Fuente de verdad: los contenedores Docker reales del stack (identificados por la
         // label que docker compose asigna automáticamente), no el campo Status del stack de
@@ -148,13 +159,15 @@ public class PortainerClient : IPortainerClient
 
             if (!response.IsSuccessStatusCode)
             {
-                return ApplicationStatus.Error;
+                // Fallo puntual de Portainer al consultar el stack: no sabemos el estado
+                // real, así que no lo demos por erróneo.
+                return null;
             }
 
             var stack = await response.Content.ReadFromJsonAsync<PortainerStackDto>(JsonOptions, ct);
             if (stack is null)
             {
-                return ApplicationStatus.Error;
+                return null;
             }
 
             // Portainer stack Status: 1 = active, 2 = inactive.
@@ -162,12 +175,32 @@ public class PortainerClient : IPortainerClient
             {
                 1 => ApplicationStatus.Running,
                 2 => ApplicationStatus.Stopped,
-                _ => ApplicationStatus.Error
+                _ => null
             };
         }
         catch
         {
-            return ApplicationStatus.Error;
+            // Timeout o error de red hablando con Portainer: desconocido, no error.
+            return null;
+        }
+    }
+
+    public async Task<int?> FindStackIdByNameAsync(string stackName, CancellationToken ct = default)
+    {
+        try
+        {
+            using var response = await _httpClient.GetAsync("api/stacks", ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var stacks = await response.Content.ReadFromJsonAsync<List<PortainerStackDto>>(JsonOptions, ct);
+            return stacks?.FirstOrDefault(s => string.Equals(s.Name, stackName, StringComparison.OrdinalIgnoreCase))?.Id;
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -417,6 +450,9 @@ public class PortainerClient : IPortainerClient
     {
         [JsonPropertyName("Id")]
         public int Id { get; set; }
+
+        [JsonPropertyName("Name")]
+        public string Name { get; set; } = string.Empty;
 
         [JsonPropertyName("Status")]
         public int Status { get; set; }
