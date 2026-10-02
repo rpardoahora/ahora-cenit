@@ -5,6 +5,7 @@ const NAV_ITEMS = [
   { to: "/admin/productos", label: "Productos" },
   { to: "/admin/usuarios", label: "Usuarios" },
   { to: "/admin/consumo", label: "Consumo" },
+  { to: "/admin/herramientas", label: "Herramientas" },
 ]
 
 export function AdminLayout() {

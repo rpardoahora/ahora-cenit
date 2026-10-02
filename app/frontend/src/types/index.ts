@@ -4,6 +4,13 @@ export interface AppConfig {
   baseDomain: string
 }
 
+export interface AdminTool {
+  key: string
+  name: string
+  description: string
+  url: string
+}
+
 export interface User {
   id: string
   name: string

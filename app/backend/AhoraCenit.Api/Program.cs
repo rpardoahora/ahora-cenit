@@ -1,5 +1,6 @@
 using System.Text;
 using AhoraCenit.Api.Data;
+using AhoraCenit.Api.Features.AdminTools;
 using AhoraCenit.Api.Features.Applications;
 using AhoraCenit.Api.Features.Auth;
 using AhoraCenit.Api.Features.Products;
@@ -22,6 +23,7 @@ builder.Services.Configure<PortainerOptions>(builder.Configuration.GetSection(Po
 builder.Services.Configure<AdminSeedOptions>(builder.Configuration.GetSection(AdminSeedOptions.SectionName));
 builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection(AuthOptions.SectionName));
 builder.Services.Configure<SmtpOptions>(builder.Configuration.GetSection(SmtpOptions.SectionName));
+builder.Services.Configure<AdminToolsOptions>(builder.Configuration.GetSection(AdminToolsOptions.SectionName));
 
 // --- Database ---
 builder.Services.AddDbContext<AppDbContext>(options =>
@@ -182,6 +184,7 @@ app.MapGroup("/api/auth").MapAuthEndpoints();
 app.MapGroup("/api/products").MapProductsEndpoints();
 app.MapGroup("/api/applications").MapApplicationsEndpoints();
 app.MapGroup("/api/users").MapUsersEndpoints();
+app.MapGroup("/api/admin/tools").MapAdminToolsEndpoints();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 

@@ -1,5 +1,6 @@
 import { toast } from "sonner"
 import type {
+  AdminTool,
   AdminUser,
   AppConfig,
   Application,
@@ -109,6 +110,12 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
 export const configApi = {
   get: () => request<AppConfig>("/config", { silent: true }),
+}
+
+// ---------- Admin tools ----------
+
+export const adminToolsApi = {
+  list: () => request<AdminTool[]>("/admin/tools"),
 }
 
 // ---------- Auth ----------
