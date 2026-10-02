@@ -34,7 +34,7 @@ LEGACY_CONTAINERS=(traefik portainer app sqlserver openobserve)
 
 # Orden y comentarios con los que se escribe infra/.env.
 ENV_KEYS=(CENIT_MODE DOMAIN PUBLIC_SCHEME HTTP_PORT PUBLIC_PORT_SUFFIX COMPOSE_FILE COMPOSE_PATH_SEPARATOR ACME_EMAIL
-  ADMIN_EMAIL ADMIN_PASSWORD DB_SA_PASSWORD JWT_SECRET APP_IMAGE APP_VERSION
+  ADMIN_EMAIL ADMIN_PASSWORD DB_SA_PASSWORD MSSQL_PID JWT_SECRET APP_IMAGE APP_VERSION
   PORTAINER_API_KEY PORTAINER_ENDPOINT_ID PORTAINER_LOCAL_PORT REGISTRY_HOST REGISTRY_LOCAL_PORT
   NUGET_PUBLIC_URL NUGET_LOCAL_PORT NUGET_TOKEN
   REQUIRE_EMAIL_CONFIRMATION SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASSWORD SMTP_FROM
@@ -229,6 +229,7 @@ apply_defaults() {
   : "${CFG[DOMAIN]:=localhost}"
   : "${CFG[ACME_EMAIL]:=${CFG[ADMIN_EMAIL]:-}}"
   : "${CFG[DB_SA_PASSWORD]:=$(gen_secret 32)}"
+  : "${CFG[MSSQL_PID]:=Express}"
   : "${CFG[JWT_SECRET]:=$(gen_secret 64)}"
   : "${CFG[APP_IMAGE]:=ghcr.io/rpardoahora/ahora-cenit}"
   : "${CFG[APP_VERSION]:=latest}"
@@ -261,6 +262,7 @@ write_env() {
         ACME_EMAIL)        echo "# Email para Let's Encrypt (solo producción)." ;;
         ADMIN_EMAIL)       echo; echo "# --- Administrador: portal, Portainer, Traefik, registry y OpenObserve ---" ;;
         DB_SA_PASSWORD)    echo; echo "# --- Secretos internos (generados automáticamente) ---" ;;
+        MSSQL_PID)         echo "# Edición de SQL Server: Express (gratis, apta para producción), Developer (solo pruebas) o Standard/Enterprise/clave con licencia." ;;
         APP_IMAGE)         echo; echo "# --- Imagen del portal (APP_VERSION: latest o sha-<commit> / v<versión>) ---" ;;
         PORTAINER_API_KEY) echo; echo "# --- Portainer / registry (rellenado por el instalador) ---" ;;
         NUGET_PUBLIC_URL)  echo; echo "# --- NuGet (Forgejo). NUGET_TOKEN: token de $FORGEJO_ADMIN para publicar paquetes ---" ;;

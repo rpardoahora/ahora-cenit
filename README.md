@@ -43,6 +43,7 @@ certificados HTTPS se piden solos.
 13. [Cambiar la configuración](#13-cambiar-la-configuración)
 14. [Problemas frecuentes](#14-problemas-frecuentes)
 15. [Para desarrolladores](#15-para-desarrolladores)
+16. [Licencia](#licencia)
 
 ---
 
@@ -425,6 +426,11 @@ editarlo y aplicar los cambios con `--update`. Ejemplos:
 > ⚠️ No cambies `DB_SA_PASSWORD` a mano: la base de datos ya existe con la
 > contraseña original.
 
+- **Edición de SQL Server**: `MSSQL_PID='Express'` por defecto (gratuita y
+  apta para producción, hasta 10 GB por base de datos). Si tienes licencia
+  de SQL Server pon `Standard`, `Enterprise` o tu clave de producto. No uses
+  `Developer` en producción: su licencia solo permite desarrollo y pruebas.
+
 ## 14. Problemas frecuentes
 
 **"El puerto 80 ya está en uso"**
@@ -493,3 +499,21 @@ app/                       código del portal: React + API .NET 10 en un contene
 - **Sin sesión**: ve el catálogo; al pulsar *Instalar* se le lleva al registro.
 - **Cliente**: despliega, ve, para y borra **sus** aplicaciones.
 - **Admin**: además gestiona productos y usuarios y ve las aplicaciones de todos.
+
+## Licencia
+
+Copyright © 2026 **CEESI ASESORES S.L.**
+
+ahora-cenit se distribuye bajo la licencia [Apache-2.0](LICENSE): puedes
+usarlo, modificarlo y redistribuirlo, también con fines comerciales,
+manteniendo los avisos de copyright y el fichero [NOTICE](NOTICE).
+
+"Ahora", "ahora-cenit" y "Flexygo" son marcas de CEESI ASESORES S.L.; la
+licencia no da permiso para usarlas (salvo para indicar el origen del
+código).
+
+El instalador despliega software de terceros (Traefik, Portainer, Forgejo,
+OpenObserve, SQL Server…) que se rige por sus propias licencias: ver
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). En particular, al instalar
+se acepta el [EULA de Microsoft SQL Server](https://go.microsoft.com/fwlink/?linkid=857698)
+(edición Express por defecto).

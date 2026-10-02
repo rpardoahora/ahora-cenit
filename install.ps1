@@ -45,7 +45,7 @@ $WslRepoPath  = '/opt/ahora-cenit'
 $BootTaskName = 'AhoraCenit-WSL'
 
 $EnvKeys = @('CENIT_MODE', 'DOMAIN', 'PUBLIC_SCHEME', 'HTTP_PORT', 'PUBLIC_PORT_SUFFIX', 'COMPOSE_FILE', 'COMPOSE_PATH_SEPARATOR', 'ACME_EMAIL',
-    'ADMIN_EMAIL', 'ADMIN_PASSWORD', 'DB_SA_PASSWORD', 'JWT_SECRET', 'APP_IMAGE', 'APP_VERSION',
+    'ADMIN_EMAIL', 'ADMIN_PASSWORD', 'DB_SA_PASSWORD', 'MSSQL_PID', 'JWT_SECRET', 'APP_IMAGE', 'APP_VERSION',
     'PORTAINER_API_KEY', 'PORTAINER_ENDPOINT_ID', 'PORTAINER_LOCAL_PORT', 'REGISTRY_HOST', 'REGISTRY_LOCAL_PORT',
     'NUGET_PUBLIC_URL', 'NUGET_LOCAL_PORT', 'NUGET_TOKEN',
     'REQUIRE_EMAIL_CONFIRMATION', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASSWORD', 'SMTP_FROM',
@@ -249,6 +249,7 @@ function Set-Defaults {
     $script:Cfg['COMPOSE_PATH_SEPARATOR'] = ':'
     Set-CfgDefault 'ACME_EMAIL' (Get-Cfg 'ADMIN_EMAIL')
     Set-CfgDefault 'DB_SA_PASSWORD' (New-Secret 32)
+    Set-CfgDefault 'MSSQL_PID' 'Express'
     Set-CfgDefault 'JWT_SECRET' (New-Secret 64)
     Set-CfgDefault 'APP_IMAGE' 'ghcr.io/rpardoahora/ahora-cenit'
     Set-CfgDefault 'APP_VERSION' 'latest'
@@ -267,6 +268,7 @@ function Export-EnvFile {
         'ACME_EMAIL'                  = @("# Email para Let's Encrypt (solo produccion).")
         'ADMIN_EMAIL'                 = @('', '# --- Administrador: portal, Portainer, Traefik, registry y OpenObserve ---')
         'DB_SA_PASSWORD'              = @('', '# --- Secretos internos (generados automaticamente) ---')
+        'MSSQL_PID'                   = @('# Edicion de SQL Server: Express (gratis, apta para produccion), Developer (solo pruebas) o Standard/Enterprise/clave con licencia.')
         'APP_IMAGE'                   = @('', '# --- Imagen del portal (APP_VERSION: latest o sha-<commit> / v<version>) ---')
         'PORTAINER_API_KEY'           = @('', '# --- Portainer / registry (rellenado por el instalador) ---')
         'NUGET_PUBLIC_URL'            = @('', "# --- NuGet (Forgejo). NUGET_TOKEN: token de $ForgejoAdmin para publicar paquetes ---")

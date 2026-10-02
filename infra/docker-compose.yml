@@ -123,6 +123,9 @@ services:
     restart: unless-stopped
     environment:
       ACCEPT_EULA: "Y"
+      # Express: gratuita y permitida en producción (máx. 10 GB por base de datos).
+      # Developer solo vale para desarrollo/pruebas. Ver THIRD-PARTY-NOTICES.md.
+      MSSQL_PID: ${MSSQL_PID:-Express}
       MSSQL_SA_PASSWORD: ${DB_SA_PASSWORD}
     volumes:
       - sqlserver_data:/var/opt/mssql
