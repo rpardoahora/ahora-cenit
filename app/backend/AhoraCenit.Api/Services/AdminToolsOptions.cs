@@ -15,4 +15,6 @@ public class AdminToolsOptions
     public string TraefikUrl { get; set; } = string.Empty;
 
     public string OpenObserveUrl { get; set; } = string.Empty;
+
+    public string NuGetUrl { get; set; } = string.Empty;
 }

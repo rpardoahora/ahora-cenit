@@ -41,6 +41,11 @@ public static class AdminToolsEndpoints
                 "OpenObserve",
                 "Trazas, métricas y logs de auditoría del portal.",
                 Resolve(tools.OpenObserveUrl, "telemetry", baseDomain, publicBaseUrl)),
+            new AdminToolResponse(
+                "nuget",
+                "Repositorio NuGet",
+                "Forgejo: paquetes NuGet públicos (organización publico) e internos (organización interno).",
+                Resolve(tools.NuGetUrl, "nuget", baseDomain, publicBaseUrl)),
         });
     }
 

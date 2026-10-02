@@ -1,0 +1,4 @@
+# Los scripts de shell deben tener finales de línea LF aunque el repo se
+# clone en Windows (si no, bash falla con "\r: command not found").
+*.sh text eol=lf
+*.ps1 text eol=crlf

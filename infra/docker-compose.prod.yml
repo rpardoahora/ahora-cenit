@@ -1,23 +1,17 @@
-networks:
-  proxy:
-    name: proxy
-    external: true
-
-volumes:
-  portainer_data:
-    name: cenit_portainer_data
+# Override de producción: HTTPS con certificados de Let's Encrypt (HTTP-01).
+# El instalador lo añade automáticamente vía COMPOSE_FILE en infra/.env cuando
+# se instala en modo producción.
+#
+# Todos los routers (los de este stack y los de los productos desplegados)
+# heredan TLS + certresolver del entrypoint websecure, así que las etiquetas
+# de Traefik son idénticas en local y en producción.
 
 services:
   traefik:
-    image: traefik:v3.6
-    container_name: traefik
-    restart: unless-stopped
-    networks:
-      - proxy
+    ports:
+      - "443:443"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./traefik/dynamic:/etc/traefik/dynamic:ro
-      - ./traefik/letsencrypt:/letsencrypt
+      - letsencrypt:/letsencrypt
     command:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
@@ -28,37 +22,10 @@ services:
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
       - --entrypoints.web.http.redirections.entrypoint.scheme=https
       - --entrypoints.websecure.address=:443
+      - --entrypoints.websecure.http.tls.certresolver=le
       - --certificatesresolvers.le.acme.email=${ACME_EMAIL}
       - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
       - --certificatesresolvers.le.acme.httpchallenge=true
       - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
       - --api.dashboard=true
       - --log.level=INFO
-    ports:
-      - "80:80"
-      - "443:443"
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.traefik-dashboard.rule=Host(`traefik.${DOMAIN}`)
-      - traefik.http.routers.traefik-dashboard.entrypoints=websecure
-      - traefik.http.routers.traefik-dashboard.tls.certresolver=le
-      - traefik.http.routers.traefik-dashboard.service=api@internal
-      - traefik.http.routers.traefik-dashboard.middlewares=traefik-dashboard-auth
-      - traefik.http.middlewares.traefik-dashboard-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH}
-
-  portainer:
-    image: portainer/portainer-ce:lts
-    container_name: portainer
-    restart: unless-stopped
-    networks:
-      - proxy
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - portainer_data:/data
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=proxy
-      - traefik.http.services.portainer.loadbalancer.server.port=9000
-      - traefik.http.routers.portainer.rule=Host(`portainer.${DOMAIN}`)
-      - traefik.http.routers.portainer.entrypoints=websecure
-      - traefik.http.routers.portainer.tls.certresolver=le

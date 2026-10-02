@@ -1,0 +1,223 @@
+# Stack completo de ahora-cenit: Traefik + Portainer + Docker Registry +
+# portal (app) + SQL Server + OpenObserve (telemetría).
+#
+# No lo edites para configurar la instalación: install.sh / install.ps1
+# generan infra/.env con todas las variables (dominio, contraseñas, API key
+# de Portainer...). Este fichero sirve tal cual para el modo local (HTTP);
+# en producción el instalador añade docker-compose.prod.yml (HTTPS con
+# Let's Encrypt) mediante COMPOSE_FILE en el .env, así que desde esta carpeta
+# basta con `docker compose up -d`, `docker compose ps`, `docker compose logs`...
+#
+# Hosts publicados (DOMAIN = localhost en local, tu dominio en producción):
+#   cloud.DOMAIN      portal ahora-cenit (UI + /api)
+#   portainer.DOMAIN  Portainer
+#   traefik.DOMAIN    dashboard de Traefik (usuario admin)
+#   registry.DOMAIN   Docker Registry privado (usuario admin)
+#   telemetry.DOMAIN  OpenObserve (trazas, métricas y logs)
+#   nuget.DOMAIN      Forgejo: repositorio de paquetes NuGet (usuario cenit-admin)
+#   DOMAIN            redirige a cloud.DOMAIN
+#   <slug>.DOMAIN     instancias de producto desplegadas desde el portal
+
+name: cenit
+
+networks:
+  # Red compartida con los stacks de producto que despliega el portal.
+  proxy:
+    name: proxy
+    external: true
+  internal:
+    name: cenit_internal
+
+volumes:
+  portainer_data:
+    name: cenit_portainer_data
+  registry_data:
+    name: cenit_registry_data
+  sqlserver_data:
+    name: cenit_sqlserver_data
+  openobserve_data:
+    name: cenit_openobserve_data
+  forgejo_data:
+    name: cenit_forgejo_data
+  letsencrypt:
+    name: cenit_letsencrypt
+
+services:
+  traefik:
+    image: traefik:${TRAEFIK_VERSION:-v3.6}
+    restart: unless-stopped
+    networks:
+      - proxy
+    ports:
+      # En local puede ser otro (p.ej. 8880 si IIS ocupa el 80); en producción siempre 80.
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - ./auth:/auth:ro
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=proxy
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:80
+      - --api.dashboard=true
+      - --log.level=INFO
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.traefik.rule: Host(`traefik.${DOMAIN}`)
+      traefik.http.routers.traefik.service: api@internal
+      traefik.http.routers.traefik.middlewares: cenit-auth
+      traefik.http.middlewares.cenit-auth.basicauth.usersfile: /auth/htpasswd
+      # El dominio raíz redirige al portal.
+      traefik.http.routers.root.rule: Host(`${DOMAIN}`)
+      traefik.http.routers.root.service: noop@internal
+      traefik.http.routers.root.middlewares: root-to-cloud
+      traefik.http.middlewares.root-to-cloud.redirectregex.regex: ^https?://[^/]+/?(.*)
+      traefik.http.middlewares.root-to-cloud.redirectregex.replacement: ${PUBLIC_SCHEME}://cloud.${DOMAIN}${PUBLIC_PORT_SUFFIX:-}/$${1}
+
+  portainer:
+    image: portainer/portainer-ce:${PORTAINER_VERSION:-lts}
+    restart: unless-stopped
+    # El entorno "local" (Docker del host vía socket) lo da de alta el instalador por API.
+    networks:
+      - proxy
+    ports:
+      # Solo en loopback: lo usa el instalador para configurar Portainer por API.
+      - "127.0.0.1:${PORTAINER_LOCAL_PORT:-9000}:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.portainer.rule: Host(`portainer.${DOMAIN}`)
+      traefik.http.services.portainer.loadbalancer.server.port: "9000"
+
+  registry:
+    image: registry:${REGISTRY_VERSION:-3}
+    restart: unless-stopped
+    networks:
+      - proxy
+    ports:
+      # En local el Docker del host hace pull/push contra localhost:5000
+      # (Docker solo acepta registries sin HTTPS si están en localhost).
+      - "127.0.0.1:${REGISTRY_LOCAL_PORT:-5000}:5000"
+    environment:
+      REGISTRY_AUTH: htpasswd
+      REGISTRY_AUTH_HTPASSWD_REALM: ahora-cenit registry
+      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      REGISTRY_HTTP_RELATIVEURLS: "true"
+      OTEL_TRACES_EXPORTER: none
+    volumes:
+      - registry_data:/var/lib/registry
+      - ./auth:/auth:ro
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.registry.rule: Host(`registry.${DOMAIN}`)
+      traefik.http.services.registry.loadbalancer.server.port: "5000"
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${DB_SA_PASSWORD}
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' -b -o /dev/null"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 20
+
+  app:
+    image: ${APP_IMAGE:-ghcr.io/rpardoahora/ahora-cenit}:${APP_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Default: Server=sqlserver,1433;Database=AhoraCenit;User Id=sa;Password=${DB_SA_PASSWORD};TrustServerCertificate=True
+      Jwt__Secret: ${JWT_SECRET}
+      Jwt__Issuer: ahora-cenit
+      Jwt__ExpiresMinutes: "480"
+      Portainer__Url: http://portainer:9000
+      Portainer__ApiKey: ${PORTAINER_API_KEY:-}
+      Portainer__EndpointId: ${PORTAINER_ENDPOINT_ID:-1}
+      BaseDomain: ${DOMAIN}
+      AdminSeed__Email: ${ADMIN_EMAIL}
+      AdminSeed__Password: ${ADMIN_PASSWORD}
+      Auth__RequireEmailConfirmation: ${REQUIRE_EMAIL_CONFIRMATION:-false}
+      Auth__PublicBaseUrl: ${PUBLIC_SCHEME}://cloud.${DOMAIN}${PUBLIC_PORT_SUFFIX:-}
+      Smtp__Host: ${SMTP_HOST:-}
+      Smtp__Port: ${SMTP_PORT:-587}
+      Smtp__User: ${SMTP_USER:-}
+      Smtp__Password: ${SMTP_PASSWORD:-}
+      Smtp__From: ${SMTP_FROM:-}
+      # En local el feed NuGet no cuelga de *.localhost (localhost:5100): se pasa explícito.
+      AdminTools__NuGetUrl: ${NUGET_PUBLIC_URL:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_USER: ${ADMIN_EMAIL}
+      OTEL_EXPORTER_OTLP_PASSWORD: ${ADMIN_PASSWORD}
+    networks:
+      - internal
+      - proxy
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: proxy
+      traefik.http.routers.app.rule: Host(`cloud.${DOMAIN}`)
+      traefik.http.services.app.loadbalancer.server.port: "8080"
+
+  # Repositorio de paquetes NuGet. La visibilidad va por organización: los
+  # paquetes de "publico" se descargan sin login; los de "interno" requieren token.
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:${FORGEJO_VERSION:-15}
+    restart: unless-stopped
+    networks:
+      - proxy
+    ports:
+      # En local los clientes NuGet (dotnet) no resuelven *.localhost: usan localhost:5100.
+      - "127.0.0.1:${NUGET_LOCAL_PORT:-5100}:3000"
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      FORGEJO__default__APP_NAME: ahora-cenit packages
+      FORGEJO__database__DB_TYPE: sqlite3
+      FORGEJO__server__ROOT_URL: ${NUGET_PUBLIC_URL}
+      FORGEJO__server__DOMAIN: nuget.${DOMAIN}
+      FORGEJO__server__DISABLE_SSH: "true"
+      FORGEJO__server__START_SSH_SERVER: "false"
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__service__REQUIRE_SIGNIN_VIEW: "false"
+      FORGEJO__packages__ENABLED: "true"
+    volumes:
+      - forgejo_data:/data
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.nuget.rule: Host(`nuget.${DOMAIN}`)
+      traefik.http.services.nuget.loadbalancer.server.port: "3000"
+
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:${OPENOBSERVE_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      ZO_ROOT_USER_EMAIL: ${ADMIN_EMAIL}
+      ZO_ROOT_USER_PASSWORD: ${ADMIN_PASSWORD}
+    volumes:
+      - openobserve_data:/data
+    networks:
+      - internal
+      - proxy
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: proxy
+      traefik.http.routers.telemetry.rule: Host(`telemetry.${DOMAIN}`)
+      traefik.http.services.telemetry.loadbalancer.server.port: "5080"

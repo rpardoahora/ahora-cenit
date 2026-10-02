@@ -32,6 +32,12 @@ pnpm-debug.log*
 
 # ---------- Docker / infra ----------
 infra/traefik/letsencrypt/
+# Generados por install.sh / install.ps1 (contienen credenciales)
+infra/auth/
+backups/
+
+# ---------- Claude Code (worktrees temporales de sesiones) ----------
+.claude/worktrees/
 
 # ---------- Editor / OS ----------
 .vscode/*

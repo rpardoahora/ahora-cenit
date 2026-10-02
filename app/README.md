@@ -12,31 +12,32 @@ La imagen se construye con `Dockerfile` en esta misma carpeta (contexto
 (Vite, con `VITE_API_URL=/api` fijo), otro publica el backend, y el stage
 final copia ambos (el backend sirve `wwwroot` + `/api`).
 
-Requiere que `../infra` esté levantada primero (ver `../infra/README.md`) y
-que exista la red `proxy` (`docker network create proxy`).
+**Despliegue (local o producción):** no se hace desde aquí. Usa el
+instalador de la raíz del repo (`install.sh` / `install.ps1`), que levanta
+la imagen publicada en `ghcr.io` junto con el resto de la infraestructura.
+Ver el [README principal](../README.md).
 
-## Dev
+## Desarrollo (compilando desde el código)
+
+`docker-compose.dev.yml` construye el portal desde este código y lo engancha
+a una instalación **local** existente (hecha con el instalador): usa su red
+`proxy`, su Traefik y su Portainer. Tiene su propia base de datos y
+OpenObserve (contenedores `cenit-dev-*`, volúmenes `cenit_dev_*`), así que
+no toca los datos de la instalación.
 
 ```bash
+cp .env.dev.example .env.dev      # y rellena PORTAINER_API_KEY (ver abajo)
 docker compose --env-file .env.dev -f docker-compose.dev.yml up -d --build
 ```
 
-- Marketplace + API: http://ahoracenit.localhost (API bajo `http://ahoracenit.localhost/api`, también expuesta directa en `localhost:8081`, ya que `8080` lo usa el dashboard de Traefik)
+- Portal + API: http://ahoracenit.localhost (con el puerto de Traefik si no es el 80, p.ej. `:8880`); también directo en `localhost:8081`
 - SQL Server accesible en `localhost:1433` (sa / valor de `DB_SA_PASSWORD`)
-- OpenObserve (traces + metrics + logs de auditoría): http://localhost:5080 o http://observe.ahoracenit.localhost
+- OpenObserve: http://localhost:5080 o http://telemetry.ahoracenit.localhost
 
-Antes de desplegar aplicaciones de verdad, entra en Portainer
-(http://portainer.ahoracenit.localhost), genera una API Key de usuario y
-ponla en `PORTAINER_API_KEY` dentro de `.env.dev`.
-
-## Prod
-
-Copia `.env.prod.example` a `.env.prod`, rellena todos los secretos
-(`DB_SA_PASSWORD`, `JWT_SECRET`, `PORTAINER_API_KEY`, `ADMIN_PASSWORD`) y:
-
-```bash
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
-```
+Para desplegar aplicaciones desde el portal de desarrollo, pon en
+`PORTAINER_API_KEY` la API key de Portainer: puedes reutilizar la que el
+instalador guardó en `../infra/.env`, o generar otra en Portainer
+(*My account* → *Access tokens*).
 
 ## Variables de entorno
 

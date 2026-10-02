@@ -1,76 +1,90 @@
-# Infra: Traefik + Portainer
+# infra — stack completo de ahora-cenit
 
-Stack base compartido por todos los proyectos (incluido `../app`, ahora-cenit).
-Expone el proxy inverso (Traefik) y la gestión de contenedores (Portainer),
-que la API de ahora-cenit usa para desplegar/parar/borrar instancias de producto.
+Esta carpeta contiene todo lo que se despliega en un servidor. **No hace
+falta tocar nada a mano**: `install.sh` / `install.ps1` (en la raíz del repo)
+generan la configuración y lo levantan todo. Ver el [README principal](../README.md).
 
-## Red compartida
+| Fichero | Para qué sirve |
+|---|---|
+| `docker-compose.yml` | Stack completo (proyecto compose `cenit`). Modo local, HTTP. |
+| `docker-compose.prod.yml` | Override de producción: puerto 443 y HTTPS con Let's Encrypt (HTTP-01). |
+| `.env` | **Generado por el instalador.** Dominio, modo, contraseñas, API key de Portainer… No va a git. |
+| `auth/htpasswd` | **Generado por el instalador.** Usuario `admin` del dashboard de Traefik y del registry. |
+| `traefik/dynamic/` | Configuración dinámica extra de Traefik (file provider, recarga en caliente). |
 
-Todos los stacks (esta infra y cualquier app, incluidas las instancias
-desplegadas dinámicamente por ahora-cenit) se conectan a la red externa
-`proxy`. Créala una sola vez por host:
-
-```bash
-docker network create proxy
-```
-
-## Dev (HTTP, dominio `*.ahoracenit.localhost`)
-
-```bash
-docker compose --env-file .env.dev -f docker-compose.dev.yml up -d
-```
-
-- Portainer: http://portainer.ahoracenit.localhost
-- Dashboard Traefik: http://localhost:8080 (sin auth, solo dev)
-
-`*.ahoracenit.localhost` resuelve a 127.0.0.1 sin tocar `/etc/hosts` (dominio
-público delegado a localhost).
-
-## Prod (HTTPS con Let's Encrypt, dominio `*.ahoracenit.com`)
-
-1. Copia `.env.prod.example` a `.env.prod` y rellena `ACME_EMAIL` y
-   `TRAEFIK_DASHBOARD_AUTH` (hash con `htpasswd`, escapando `$` como `$$`).
-2. Asegúrate de que los DNS de `ahoracenit.com`, `*.ahoracenit.com`,
-   `portainer.ahoracenit.com` y `traefik.ahoracenit.com` apuntan al host.
+`.env` define `COMPOSE_FILE`, así que desde esta carpeta funcionan los
+comandos normales de compose sin indicar ficheros:
 
 ```bash
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
+docker compose ps
+docker compose logs -f app
+docker compose restart portainer
+docker compose up -d          # aplica cambios hechos a mano en .env
 ```
 
-- Portainer: https://portainer.ahoracenit.com
-- Dashboard Traefik (con auth): https://traefik.ahoracenit.com
+## Servicios
 
-## Desplegar ahora-cenit desde la imagen de GitHub Actions
+| Servicio | Imagen | Host público | Notas |
+|---|---|---|---|
+| `traefik` | `traefik:v3.6` | `traefik.DOMAIN` | Proxy inverso. Dashboard protegido con `auth/htpasswd`. El dominio raíz redirige a `cloud.DOMAIN`. |
+| `portainer` | `portainer/portainer-ce:lts` | `portainer.DOMAIN` | También en `127.0.0.1:9000` (solo loopback) para que el instalador lo configure por API. |
+| `registry` | `registry:3` | `registry.DOMAIN` | Registry privado con auth htpasswd. También en `127.0.0.1:5000` (en local Docker hace pull/push contra `localhost:5000`). |
+| `app` | `ghcr.io/rpardoahora/ahora-cenit` | `cloud.DOMAIN` | Portal (UI + `/api`). |
+| `sqlserver` | `mssql/server:2022` | — | Solo en la red interna `cenit_internal`. |
+| `openobserve` | `openobserve` | `telemetry.DOMAIN` | Trazas, métricas y logs de auditoría del portal (OTLP). |
+| `forgejo` | `codeberg.org/forgejo/forgejo:15` (LTS) | `nuget.DOMAIN` | Repositorio NuGet. SQLite, sin registro abierto ni SSH. También en `127.0.0.1:5100`: en local es su URL pública (`dotnet` no resuelve `*.localhost`). |
 
-Cada push a `main` (o tag `v*`) construye y publica la imagen de la app en
-`ghcr.io/rpardoahora/ahora-cenit` (ver `.github/workflows/docker-build.yml`).
-`docker-compose-cenit.yml` levanta ese stack (sqlserver + app + OpenObserve)
-usando esa imagen ya construida, sin necesitar el código fuente en el host.
-Copia `.env.cenit.example` a `.env.cenit` y rellénalo (incluye
-`OPENOBSERVE_ROOT_EMAIL`/`OPENOBSERVE_ROOT_PASSWORD`, credenciales del panel
-de OpenObserve, y `OTEL_EXPORTER_OTLP_ENDPOINT`, vacío si no quieres exportar
-la auditoría como traces+metrics+logs — ver `../app/README.md#auditoría`):
+Volúmenes (todos con prefijo `cenit_`): `cenit_sqlserver_data`,
+`cenit_portainer_data`, `cenit_registry_data`, `cenit_openobserve_data`,
+`cenit_forgejo_data`, `cenit_letsencrypt`.
 
-```bash
-docker compose --env-file .env.cenit -f docker-compose-cenit.yml pull
-docker compose --env-file .env.cenit -f docker-compose-cenit.yml up -d
-```
+### NuGet (Forgejo)
 
-Necesita que ya exista la red `proxy` (creada al levantar
-`docker-compose.prod.yml`).
+El instalador crea el admin `cenit-admin` (CLI `forgejo admin user create`),
+las organizaciones `publico` (visibilidad *public*) e `interno` (*private*) y
+un token `cenit-nuget` (scopes `write:package`, `read:user`,
+`read:organization`) que guarda en `NUGET_TOKEN`. En Forgejo los permisos de
+paquetes van por propietario: los paquetes de una organización pública se
+leen de forma anónima; los de una privada solo sus miembros (con token).
+`FORGEJO_VERSION` en `.env` permite fijar otra versión.
 
-## Variables reservadas para stacks de producto
+## Cómo queda todo enlazado
 
-Cuando ahora-cenit despliega el compose de un producto vía la API de
-Portainer, siempre inyecta estas dos variables; las plantillas de producto
-deben usarlas en su router de Traefik:
+- **Red `proxy`** (externa): la comparten Traefik, Portainer, el registry, el
+  portal, OpenObserve y **todas las instancias de producto** que despliega el
+  portal. Traefik solo enruta contenedores con `traefik.enable=true`.
+- **Portainer**: el instalador crea el usuario `admin` (usando el setup token
+  que Portainer escribe en su log), da de alta el entorno Docker local, genera
+  una API key y la guarda en `.env` (`PORTAINER_API_KEY`,
+  `PORTAINER_ENDPOINT_ID`), que es lo que usa el portal para crear stacks.
+- **Registry en Portainer**: queda registrado como registry `ahora-cenit`
+  (`REGISTRY_HOST` = `registry.DOMAIN` en producción, `localhost:5000` en
+  local) con sus credenciales, así que los stacks pueden usar imágenes privadas.
+- **TLS**: en producción los routers no declaran `entrypoints` ni
+  `certresolver`; lo heredan del entrypoint `websecure`. Por eso las mismas
+  etiquetas sirven en local (HTTP) y en producción (HTTPS).
 
-- `APP_SUBDOMAIN`: slug único de la instancia (`<producto>-<cliente>`)
-- `BASE_DOMAIN`: `ahoracenit.localhost` en dev / `ahoracenit.com` en prod
+## Plantillas de producto
+
+El portal inyecta en cada stack `APP_SUBDOMAIN` (slug de la instancia) y
+`BASE_DOMAIN` (= `DOMAIN`). Una plantilla mínima:
 
 ```yaml
-labels:
-  - traefik.enable=true
-  - traefik.docker.network=proxy
-  - traefik.http.routers.${APP_SUBDOMAIN}.rule=Host(`${APP_SUBDOMAIN}.${BASE_DOMAIN}`)
+services:
+  web:
+    image: registry.midominio.com/mi-app:1.0   # en local: localhost:5000/mi-app:1.0
+    restart: unless-stopped
+    networks: [proxy]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.${APP_SUBDOMAIN}.rule=Host(`${APP_SUBDOMAIN}.${BASE_DOMAIN}`)
+      - traefik.http.services.${APP_SUBDOMAIN}.loadbalancer.server.port=80
+
+networks:
+  proxy:
+    external: true
 ```
+
+No pongas `entrypoints=websecure` ni `tls.certresolver=le` en las
+plantillas: en local no existe el entrypoint `websecure` y en producción ya
+se aplica solo.

@@ -3,24 +3,24 @@ networks:
     name: proxy
     external: true
   cenit_internal:
-    name: cenit_internal
+    name: cenit_dev_internal
 
 volumes:
-  cenit_sqlserver_data:
-    name: cenit_sqlserver_data
-  cenit_openobserve_data:
-    name: cenit_openobserve_data
+  cenit_dev_sqlserver_data:
+    name: cenit_dev_sqlserver_data
+  cenit_dev_openobserve_data:
+    name: cenit_dev_openobserve_data
 
 services:
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest
-    container_name: sqlserver
+    container_name: cenit-dev-sqlserver
     restart: unless-stopped
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: ${DB_SA_PASSWORD}
     volumes:
-      - cenit_sqlserver_data:/var/opt/mssql
+      - cenit_dev_sqlserver_data:/var/opt/mssql
     networks:
       - cenit_internal
     ports:
@@ -30,7 +30,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: app
+    container_name: cenit-dev-app
     restart: unless-stopped
     depends_on:
       - sqlserver
@@ -68,19 +68,19 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=proxy
-      - traefik.http.services.app.loadbalancer.server.port=8080
-      - traefik.http.routers.app.rule=Host(`${DOMAIN}`)
-      - traefik.http.routers.app.entrypoints=web
+      - traefik.http.services.cenit-dev-app.loadbalancer.server.port=8080
+      - traefik.http.routers.cenit-dev-app.rule=Host(`${DOMAIN}`)
+      - traefik.http.routers.cenit-dev-app.entrypoints=web
 
   openobserve:
     image: public.ecr.aws/zinclabs/openobserve:latest
-    container_name: openobserve
+    container_name: cenit-dev-openobserve
     restart: unless-stopped
     environment:
       ZO_ROOT_USER_EMAIL: ${OPENOBSERVE_ROOT_EMAIL}
       ZO_ROOT_USER_PASSWORD: ${OPENOBSERVE_ROOT_PASSWORD}
     volumes:
-      - cenit_openobserve_data:/data
+      - cenit_dev_openobserve_data:/data
     networks:
       - cenit_internal
       - proxy
@@ -89,6 +89,6 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=proxy
-      - traefik.http.services.openobserve.loadbalancer.server.port=5080
-      - traefik.http.routers.openobserve.rule=Host(`observe.${DOMAIN}`)
-      - traefik.http.routers.openobserve.entrypoints=web
+      - traefik.http.services.cenit-dev-openobserve.loadbalancer.server.port=5080
+      - traefik.http.routers.cenit-dev-openobserve.rule=Host(`telemetry.${DOMAIN}`)
+      - traefik.http.routers.cenit-dev-openobserve.entrypoints=web

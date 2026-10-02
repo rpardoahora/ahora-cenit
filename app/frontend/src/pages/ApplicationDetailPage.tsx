@@ -145,7 +145,7 @@ export function ApplicationDetailPage() {
             <dt className="text-muted-foreground">URL</dt>
             <dd>
               <a
-                href={`${window.location.protocol}//${application.fullDomain}`}
+                href={`${window.location.protocol}//${application.fullDomain}${window.location.port ? `:${window.location.port}` : ""}`}
                 target="_blank"
                 rel="noreferrer"
                 className="text-primary underline-offset-4 hover:underline"
