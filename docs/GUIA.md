@@ -454,12 +454,13 @@ editarlo y aplicar los cambios con `--update`. Ejemplos:
 > ⚠️ No cambies `DB_SA_PASSWORD` a mano: la base de datos ya existe con la
 > contraseña original.
 
-- **Registro abierto de usuarios**: por defecto cualquiera puede crearse una
-  cuenta desde el portal. Para cerrarlo, entra como administrador en
-  **Administración → Ajustes** y desactiva «Registro de usuarios» (efecto
-  inmediato, sin reiniciar; solo un administrador podrá dar de alta usuarios).
-  `REGISTRATION_ENABLED='false'` en `infra/.env` fija solo el valor inicial de
-  una instalación nueva.
+- **Registro de usuarios externos**: el instalador pregunta si se habilita y
+  por defecto **no**. Si lo habilitas, cualquiera puede crearse una cuenta desde
+  el portal y desplegar aplicaciones en tu servidor bajo su propia
+  organización. Se puede cambiar en cualquier momento como administrador en
+  **Administración → Ajustes** («Registro de usuarios»; efecto inmediato, sin
+  reiniciar). `REGISTRATION_ENABLED` en `infra/.env` es solo el valor inicial:
+  en cuanto se cambia desde el portal, manda el del portal.
 - **Edición de SQL Server**: `MSSQL_PID='Express'` por defecto (gratuita y
   apta para producción, hasta 10 GB por base de datos). Si tienes licencia
   de SQL Server pon `Standard`, `Enterprise` o tu clave de producto. No uses

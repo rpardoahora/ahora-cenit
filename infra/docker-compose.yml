@@ -152,7 +152,7 @@ services:
       AdminSeed__Password: ${ADMIN_PASSWORD}
       Auth__RequireEmailConfirmation: ${REQUIRE_EMAIL_CONFIRMATION:-false}
       # Valor INICIAL de "permitir el registro abierto"; luego manda lo que el admin fije en el panel (Ajustes).
-      Auth__RegistrationEnabled: ${REGISTRATION_ENABLED:-true}
+      Auth__RegistrationEnabled: ${REGISTRATION_ENABLED:-false}
       Auth__PublicBaseUrl: ${PUBLIC_SCHEME}://cloud.${DOMAIN}${PUBLIC_PORT_SUFFIX:-}
       Smtp__Host: ${SMTP_HOST:-}
       Smtp__Port: ${SMTP_PORT:-587}

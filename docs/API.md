@@ -249,7 +249,7 @@ el portal oculta el botón «Registrarse»; solo un administrador puede crear
 usuarios (`POST /api/users`). Las cuentas existentes siguen funcionando.
 Es el mismo interruptor que hay en el panel, en **Administración → Ajustes**.
 El valor se guarda en la base de datos; el valor inicial (primer arranque) es
-el de la variable `REGISTRATION_ENABLED` del `infra/.env` (por defecto `true`).
+el de la variable `REGISTRATION_ENABLED` del `infra/.env` (por defecto `false`).
 `GET /api/config` (público) incluye `registrationEnabled` para saber el estado.
 
 ---

@@ -48,7 +48,7 @@ $EnvKeys = @('CENIT_MODE', 'DOMAIN', 'PUBLIC_SCHEME', 'HTTP_PORT', 'PUBLIC_PORT_
     'ADMIN_EMAIL', 'ADMIN_PASSWORD', 'DB_SA_PASSWORD', 'MSSQL_PID', 'JWT_SECRET', 'APP_IMAGE', 'APP_VERSION',
     'PORTAINER_API_KEY', 'PORTAINER_ENDPOINT_ID', 'PORTAINER_LOCAL_PORT', 'REGISTRY_HOST', 'REGISTRY_LOCAL_PORT',
     'NUGET_PUBLIC_URL', 'NUGET_LOCAL_PORT', 'CENIT_TOKEN',
-    'REQUIRE_EMAIL_CONFIRMATION', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASSWORD', 'SMTP_FROM',
+    'REGISTRATION_ENABLED', 'REQUIRE_EMAIL_CONFIRMATION', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASSWORD', 'SMTP_FROM',
     'OTEL_EXPORTER_OTLP_ENDPOINT')
 
 $script:Cfg = [ordered]@{}
@@ -288,6 +288,7 @@ function Set-Defaults {
     Set-CfgDefault 'APP_IMAGE' 'ghcr.io/rpardoahora/ahora-cenit'
     Set-CfgDefault 'APP_VERSION' 'latest'
     Set-CfgDefault 'PORTAINER_LOCAL_PORT' '9000'
+    Set-CfgDefault 'REGISTRATION_ENABLED' 'false'
     Set-CfgDefault 'REQUIRE_EMAIL_CONFIRMATION' 'false'
     Set-CfgDefault 'SMTP_PORT' '587'
     if (-not $script:Cfg.Contains('OTEL_EXPORTER_OTLP_ENDPOINT')) { $script:Cfg['OTEL_EXPORTER_OTLP_ENDPOINT'] = 'http://openobserve:5080/api/default' }
@@ -306,7 +307,8 @@ function Export-EnvFile {
         'APP_IMAGE'                   = @('', '# --- Imagen del portal (APP_VERSION: latest o sha-<commit> / v<version>) ---')
         'PORTAINER_API_KEY'           = @('', '# --- Portainer / registry (rellenado por el instalador) ---')
         'NUGET_PUBLIC_URL'            = @('', "# --- NuGet (Nexus) y token de plataforma. CENIT_TOKEN es la contrasena del usuario ${PlatformUser}: vale para la API del portal, docker login y NuGet ---")
-        'REQUIRE_EMAIL_CONFIRMATION'  = @('', '# --- Emails (SMTP vacio = los emails solo se escriben en el log) ---')
+        'REGISTRATION_ENABLED'        = @('', '# --- Registro de usuarios externos (valor inicial: despues manda Administracion > Ajustes del portal) ---')
+        'REQUIRE_EMAIL_CONFIRMATION'  = @('# --- Emails (SMTP vacio = los emails solo se escriben en el log) ---')
         'OTEL_EXPORTER_OTLP_ENDPOINT' = @('', '# --- Telemetria (vacio = no exportar a OpenObserve) ---')
     }
     $lines = New-Object System.Collections.Generic.List[string]
@@ -652,6 +654,14 @@ function Read-Configuration {
     }
 
     Write-Host ""
+    Write-Warn "Si habilitas el registro de usuarios externos, cualquier persona podra crearse una cuenta"
+    Write-Warn "en el portal y desplegar aplicaciones en este servidor bajo su propia organizacion."
+    Write-Info "Es el valor inicial: si ya lo has cambiado en Administracion > Ajustes del portal, manda ese."
+    if (Read-YesNo "Habilitar el registro de usuarios externos?" ((Get-Cfg 'REGISTRATION_ENABLED') -eq 'true')) {
+        $script:Cfg['REGISTRATION_ENABLED'] = 'true'
+    } else { $script:Cfg['REGISTRATION_ENABLED'] = 'false' }
+
+    Write-Host ""
     $smtpDefault = [bool](Get-Cfg 'SMTP_HOST')
     if (Read-YesNo "Configurar SMTP para enviar emails (confirmacion de registro, recuperar contrasena)?" $smtpDefault) {
         $script:Cfg['SMTP_HOST'] = Read-Value "Servidor SMTP" (Get-Cfg 'SMTP_HOST')
@@ -663,7 +673,7 @@ function Read-Configuration {
         if (Test-ForbiddenChars (Get-Cfg 'SMTP_PASSWORD')) { Stop-WithError "La contrasena SMTP no puede contener espacios, comillas ni \." }
         $from = Get-Cfg 'SMTP_FROM'; if (-not $from) { $from = "no-reply@$(Get-Cfg 'DOMAIN')" }
         $script:Cfg['SMTP_FROM'] = Read-Value "Remitente (From)" $from
-        if (Read-YesNo "Exigir confirmacion de email a los usuarios que se registren?" $true) {
+        if ((Get-Cfg 'REGISTRATION_ENABLED') -eq 'true' -and (Read-YesNo "Exigir confirmacion de email a los usuarios que se registren?" $true)) {
             $script:Cfg['REQUIRE_EMAIL_CONFIRMATION'] = 'true'
         } else { $script:Cfg['REQUIRE_EMAIL_CONFIRMATION'] = 'false' }
     } else {
@@ -1016,6 +1026,11 @@ function Show-Summary {
     Write-Host ""
     if ($script:GeneratedPassword) {
         Write-Host "  La contrasena de administrador se ha generado automaticamente: apuntala." -ForegroundColor Yellow
+    }
+    if ((Get-Cfg 'REGISTRATION_ENABLED') -eq 'true') {
+        Write-Host "  Registro de usuarios externos (valor inicial): HABILITADO (cualquiera puede crearse una cuenta y desplegar)" -ForegroundColor Yellow
+    } else {
+        Write-Host "  Registro de usuarios externos (valor inicial): deshabilitado (solo el administrador da de alta usuarios)."
     }
     Write-Host "  Todas las credenciales estan guardadas en infra\.env."
     if ((Get-Cfg 'CENIT_MODE') -eq 'production') {

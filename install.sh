@@ -37,7 +37,7 @@ ENV_KEYS=(CENIT_MODE DOMAIN PUBLIC_SCHEME HTTP_PORT PUBLIC_PORT_SUFFIX COMPOSE_F
   ADMIN_EMAIL ADMIN_PASSWORD DB_SA_PASSWORD MSSQL_PID JWT_SECRET APP_IMAGE APP_VERSION
   PORTAINER_API_KEY PORTAINER_ENDPOINT_ID PORTAINER_LOCAL_PORT REGISTRY_HOST REGISTRY_LOCAL_PORT
   NUGET_PUBLIC_URL NUGET_LOCAL_PORT CENIT_TOKEN
-  REQUIRE_EMAIL_CONFIRMATION SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASSWORD SMTP_FROM
+  REGISTRATION_ENABLED REQUIRE_EMAIL_CONFIRMATION SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASSWORD SMTP_FROM
   OTEL_EXPORTER_OTLP_ENDPOINT)
 
 declare -A CFG=()
@@ -271,6 +271,7 @@ apply_defaults() {
   : "${CFG[REGISTRY_LOCAL_PORT]:=5000}"
   : "${CFG[PORTAINER_ENDPOINT_ID]:=}"
   : "${CFG[PORTAINER_API_KEY]:=}"
+  : "${CFG[REGISTRATION_ENABLED]:=false}"
   : "${CFG[REQUIRE_EMAIL_CONFIRMATION]:=false}"
   : "${CFG[SMTP_PORT]:=587}"
   [ -n "${CFG[OTEL_EXPORTER_OTLP_ENDPOINT]+x}" ] || CFG[OTEL_EXPORTER_OTLP_ENDPOINT]="http://openobserve:5080/api/default"
@@ -300,7 +301,8 @@ write_env() {
         APP_IMAGE)         echo; echo "# --- Imagen del portal (APP_VERSION: latest o sha-<commit> / v<versión>) ---" ;;
         PORTAINER_API_KEY) echo; echo "# --- Portainer / registry (rellenado por el instalador) ---" ;;
         NUGET_PUBLIC_URL)  echo; echo "# --- NuGet (Nexus) y token de plataforma. CENIT_TOKEN es la contraseña del usuario $PLATFORM_USER: vale para la API del portal, docker login y NuGet ---" ;;
-        REQUIRE_EMAIL_CONFIRMATION) echo; echo "# --- Emails (SMTP vacío = los emails solo se escriben en el log) ---" ;;
+        REGISTRATION_ENABLED) echo; echo "# --- Registro de usuarios externos (valor inicial: después manda Administración > Ajustes del portal) ---" ;;
+        REQUIRE_EMAIL_CONFIRMATION) echo "# --- Emails (SMTP vacío = los emails solo se escriben en el log) ---" ;;
         OTEL_EXPORTER_OTLP_ENDPOINT) echo; echo "# --- Telemetría (vacío = no exportar a OpenObserve) ---" ;;
       esac
       printf "%s='%s'\n" "$k" "${CFG[$k]:-}"
@@ -589,6 +591,17 @@ collect_config() {
   fi
 
   echo
+  warn "Si habilitas el registro de usuarios externos, cualquier persona podrá crearse una cuenta"
+  warn "en el portal y desplegar aplicaciones en este servidor bajo su propia organización."
+  info "Es el valor inicial: si ya lo has cambiado en Administración > Ajustes del portal, manda ese."
+  local reg_default=n; [ "$(cfg REGISTRATION_ENABLED)" = "true" ] && reg_default=s
+  if ask_yes_no "¿Habilitar el registro de usuarios externos?" "$reg_default"; then
+    CFG[REGISTRATION_ENABLED]=true
+  else
+    CFG[REGISTRATION_ENABLED]=false
+  fi
+
+  echo
   local smtp_default=n; [ -n "$(cfg SMTP_HOST)" ] && smtp_default=s
   if ask_yes_no "¿Configurar SMTP para enviar emails (confirmación de registro, recuperar contraseña)?" "$smtp_default"; then
     CFG[SMTP_HOST]="$(ask "Servidor SMTP" "$(cfg SMTP_HOST)")"
@@ -598,7 +611,7 @@ collect_config() {
     [ -n "$sp" ] && CFG[SMTP_PASSWORD]="$sp"
     has_forbidden_chars "${CFG[SMTP_PASSWORD]:-}" && die "La contraseña SMTP no puede contener espacios, comillas ni \\."
     CFG[SMTP_FROM]="$(ask "Remitente (From)" "${CFG[SMTP_FROM]:-no-reply@${CFG[DOMAIN]}}")"
-    if ask_yes_no "¿Exigir confirmación de email a los usuarios que se registren?" s; then
+    if [ "${CFG[REGISTRATION_ENABLED]}" = "true" ] && ask_yes_no "¿Exigir confirmación de email a los usuarios que se registren?" s; then
       CFG[REQUIRE_EMAIL_CONFIRMATION]=true
     else
       CFG[REQUIRE_EMAIL_CONFIRMATION]=false
@@ -933,6 +946,11 @@ EOF
   if [ "$GENERATED_PASSWORD" -eq 1 ]; then
     printf '  %sLa contraseña de administrador se ha generado automáticamente: apúntala.%s
 ' "$C_BOLD$C_YELLOW" "$C_RESET"
+  fi
+  if [ "$(cfg REGISTRATION_ENABLED)" = "true" ]; then
+    printf '  %sRegistro de usuarios externos (valor inicial): HABILITADO%s (cualquiera puede crearse una cuenta y desplegar)\n' "$C_BOLD$C_YELLOW" "$C_RESET"
+  else
+    echo "  Registro de usuarios externos (valor inicial): deshabilitado (solo el administrador da de alta usuarios)."
   fi
   echo "  Todas las credenciales están guardadas en infra/.env."
   if [ "$(cfg CENIT_MODE)" = "production" ]; then
