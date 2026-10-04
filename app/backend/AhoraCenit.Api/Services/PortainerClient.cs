@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -8,7 +9,8 @@ namespace AhoraCenit.Api.Services;
 
 public record PortainerCreateStackResult(bool Success, int? StackId, int EndpointId, string? ErrorMessage);
 
-public record PortainerOperationResult(bool Success, string? ErrorMessage);
+/// <param name="Busy">Portainer sigue con otra operación sobre el stack (p. ej. el despliegue inicial).</param>
+public record PortainerOperationResult(bool Success, string? ErrorMessage, bool Busy = false);
 
 /// <summary>Consumo agregado de recursos de todos los contenedores de un stack.</summary>
 public record StackResourceUsage(double CpuPercent, long MemoryUsageBytes, long DiskUsageBytes, int ContainerCount);
@@ -76,6 +78,9 @@ public class PortainerClient : IPortainerClient
 {
     private readonly HttpClient _httpClient;
     private readonly PortainerOptions _options;
+
+    private static readonly TimeSpan StackBusyTimeout = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan StackBusyRetryDelay = TimeSpan.FromSeconds(3);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public PortainerClient(HttpClient httpClient, IOptions<PortainerOptions> options)
@@ -386,43 +391,46 @@ public class PortainerClient : IPortainerClient
         return usage < 0 ? stats.MemoryStats.Usage : usage;
     }
 
-    public async Task<PortainerOperationResult> StartStackAsync(int stackId, int endpointId, CancellationToken ct = default)
+    /// <summary>
+    /// Arranca o para un stack. Portainer responde 409 "Stack deployment is in
+    /// progress" mientras termina el despliegue (aunque los contenedores ya estén
+    /// en marcha), así que en ese caso se reintenta durante un rato.
+    /// </summary>
+    private async Task<PortainerOperationResult> PostStackActionAsync(int stackId, int endpointId, string action, CancellationToken ct)
     {
-        try
+        var deadline = DateTime.UtcNow + StackBusyTimeout;
+        while (true)
         {
-            using var response = await _httpClient.PostAsync($"api/stacks/{stackId}/start?endpointId={endpointId}", content: null, ct);
-            if (!response.IsSuccessStatusCode)
+            try
             {
+                using var response = await _httpClient.PostAsync($"api/stacks/{stackId}/{action}?endpointId={endpointId}", content: null, ct);
+                if (response.IsSuccessStatusCode)
+                {
+                    return new PortainerOperationResult(true, null);
+                }
+
                 var body = await response.Content.ReadAsStringAsync(ct);
-                return new PortainerOperationResult(false, $"Portainer respondió {(int)response.StatusCode}: {body}");
+                var busy = response.StatusCode == HttpStatusCode.Conflict
+                    && body.Contains("in progress", StringComparison.OrdinalIgnoreCase);
+                if (!busy || DateTime.UtcNow >= deadline)
+                {
+                    return new PortainerOperationResult(false, $"Portainer respondió {(int)response.StatusCode}: {body}", busy);
+                }
+            }
+            catch (Exception ex)
+            {
+                return new PortainerOperationResult(false, ex.Message);
             }
 
-            return new PortainerOperationResult(true, null);
-        }
-        catch (Exception ex)
-        {
-            return new PortainerOperationResult(false, ex.Message);
+            await Task.Delay(StackBusyRetryDelay, ct);
         }
     }
 
-    public async Task<PortainerOperationResult> StopStackAsync(int stackId, int endpointId, CancellationToken ct = default)
-    {
-        try
-        {
-            using var response = await _httpClient.PostAsync($"api/stacks/{stackId}/stop?endpointId={endpointId}", content: null, ct);
-            if (!response.IsSuccessStatusCode)
-            {
-                var body = await response.Content.ReadAsStringAsync(ct);
-                return new PortainerOperationResult(false, $"Portainer respondió {(int)response.StatusCode}: {body}");
-            }
+    public Task<PortainerOperationResult> StartStackAsync(int stackId, int endpointId, CancellationToken ct = default) =>
+        PostStackActionAsync(stackId, endpointId, "start", ct);
 
-            return new PortainerOperationResult(true, null);
-        }
-        catch (Exception ex)
-        {
-            return new PortainerOperationResult(false, ex.Message);
-        }
-    }
+    public Task<PortainerOperationResult> StopStackAsync(int stackId, int endpointId, CancellationToken ct = default) =>
+        PostStackActionAsync(stackId, endpointId, "stop", ct);
 
     public async Task<PortainerOperationResult> DeleteStackAsync(int stackId, int endpointId, string stackName, CancellationToken ct = default)
     {

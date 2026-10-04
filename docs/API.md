@@ -214,11 +214,16 @@ Respuesta (`ApplicationResponse`):
   "id": "…", "productId": "…", "productName": "Mi ERP",
   "userId": "…", "ownerName": "Acme S.L.", "ownerClientSlug": "acme-s-l",
   "subdomain": "mi-erp-acme", "fullDomain": "mi-erp-acme.midominio.com",
+  "url": "https://mi-erp-acme.midominio.com",
   "envVarValues": { "ADMIN_USER": "acme", "ADMIN_PASSWORD": "S3gura!", "PLAN": "basico", "LICENSE_KEY": "XXXX" },
   "status": "Running", "portainerStackId": 12, "portainerEndpointId": 1,
   "createdAt": "…", "updatedAt": "…"
 }
 ```
+
+`url` es la dirección lista para abrir, con el esquema y el puerto de la
+instalación (en local, p. ej. `http://mi-erp-acme.ahoracenit.localhost:8880`).
+Úsala en lugar de componerla a partir de `fullDomain`.
 
 ### Consultar y gestionar
 
@@ -230,6 +235,10 @@ Respuesta (`ApplicationResponse`):
 | `POST /api/applications/{id}/stop` | Para la aplicación (los datos se conservan). |
 | `POST /api/applications/{id}/start` | La vuelve a arrancar. |
 | `DELETE /api/applications/{id}` | La borra **con sus datos** (stack y volúmenes). `204`. |
+
+`stop` y `start` esperan hasta 90 s si Portainer todavía está terminando el
+despliegue. Si pasado ese tiempo sigue ocupado responden `409` (se puede
+reintentar); cualquier otro fallo de Portainer es `502`.
 
 Estados (`status`): `Deploying`, `Running`, `Provisioning` (arrancada,
 esperando el certificado HTTPS), `Stopped`, `Error`, `Deleted` (sus
@@ -273,7 +282,7 @@ USER_ID=$(curl -s -H "$AUTH" -H "Content-Type: application/json" \
 APP=$(curl -s --max-time 900 -H "$AUTH" -H "Content-Type: application/json" \
   -d "{\"productId\":\"$PRODUCT_ID\",\"userId\":\"$USER_ID\",\"subdomain\":\"erp-acme\",\"envVars\":{\"ADMIN_PASSWORD\":\"S3gura!\"}}" \
   $CENIT/applications)
-APP_ID=$(echo "$APP" | jq -r .id); echo "$APP" | jq -r .fullDomain
+APP_ID=$(echo "$APP" | jq -r .id); echo "$APP" | jq -r .url
 
 # 4. Estado, parar, arrancar, borrar
 curl -s -H "$AUTH" $CENIT/applications/$APP_ID/status | jq -r .status

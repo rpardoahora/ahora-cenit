@@ -131,6 +131,7 @@ export interface Application {
   ownerClientSlug: string
   subdomain: string
   fullDomain: string
+  url: string
   envVarValues: Record<string, string>
   status: ApplicationStatus
   portainerStackId: number | null

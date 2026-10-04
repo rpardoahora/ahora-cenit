@@ -187,7 +187,7 @@ public static class ApplicationsEndpoints
                 result: new { application.Id, application.Subdomain, application.PortainerStackId },
                 sw.Elapsed, success: true);
 
-            return Results.Created($"/api/applications/{application.Id}", ToResponse(application, baseDomain));
+            return Results.Created($"/api/applications/{application.Id}", ToResponse(application, configuration));
         }
 
         application.Status = ApplicationStatus.Error;
@@ -206,7 +206,7 @@ public static class ApplicationsEndpoints
             {
                 message = "No se pudo desplegar la aplicación en Portainer.",
                 error = result.ErrorMessage,
-                application = ToResponse(application, baseDomain)
+                application = ToResponse(application, configuration)
             },
             statusCode: StatusCodes.Status502BadGateway);
     }
@@ -241,7 +241,7 @@ public static class ApplicationsEndpoints
 
         var baseDomain = GetBaseDomain(configuration);
         var applications = await query.OrderByDescending(a => a.CreatedAt).ToListAsync(ct);
-        return Results.Ok(applications.Select(a => ToResponse(a, baseDomain)));
+        return Results.Ok(applications.Select(a => ToResponse(a, configuration)));
     }
 
     private static async Task<IResult> GetUsageSummaryAsync(
@@ -296,7 +296,7 @@ public static class ApplicationsEndpoints
             return Results.Forbid();
         }
 
-        return Results.Ok(ToResponse(application, GetBaseDomain(configuration)));
+        return Results.Ok(ToResponse(application, configuration));
     }
 
     private static async Task<IResult> RefreshStatusAsync(
@@ -332,7 +332,7 @@ public static class ApplicationsEndpoints
             var recoveredStackId = await portainerClient.FindStackIdByNameAsync(application.Subdomain, ct);
             if (recoveredStackId is null)
             {
-                return Results.Ok(ToResponse(application, baseDomain));
+                return Results.Ok(ToResponse(application, configuration));
             }
 
             application.PortainerStackId = recoveredStackId;
@@ -350,7 +350,7 @@ public static class ApplicationsEndpoints
             // No se pudo determinar el estado real (fallo transitorio de conectividad con
             // Portainer): mantenemos el último estado conocido en lugar de asumir un error.
             await db.SaveChangesAsync(ct);
-            return Results.Ok(ToResponse(application, baseDomain));
+            return Results.Ok(ToResponse(application, configuration));
         }
 
         if (status == ApplicationStatus.Running)
@@ -362,7 +362,7 @@ public static class ApplicationsEndpoints
         application.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
 
-        return Results.Ok(ToResponse(application, baseDomain));
+        return Results.Ok(ToResponse(application, configuration));
     }
 
     /// <summary>
@@ -419,7 +419,7 @@ public static class ApplicationsEndpoints
                 principal, "Application", "Stop", application.Id, parameters: null, result: null,
                 sw.Elapsed, success: false, errorMessage: result.ErrorMessage);
 
-            return Results.Json(new { message = "No se pudo parar la aplicación.", error = result.ErrorMessage }, statusCode: StatusCodes.Status502BadGateway);
+            return StackActionFailed("No se pudo parar la aplicación.", result);
         }
 
         application.Status = ApplicationStatus.Stopped;
@@ -431,7 +431,7 @@ public static class ApplicationsEndpoints
             parameters: null, result: new { application.Subdomain },
             sw.Elapsed, success: true);
 
-        return Results.Ok(ToResponse(application, GetBaseDomain(configuration)));
+        return Results.Ok(ToResponse(application, configuration));
     }
 
     private static async Task<IResult> StartAsync(
@@ -473,7 +473,7 @@ public static class ApplicationsEndpoints
                 principal, "Application", "Start", application.Id, parameters: null, result: null,
                 sw.Elapsed, success: false, errorMessage: result.ErrorMessage);
 
-            return Results.Json(new { message = "No se pudo iniciar la aplicación.", error = result.ErrorMessage }, statusCode: StatusCodes.Status502BadGateway);
+            return StackActionFailed("No se pudo iniciar la aplicación.", result);
         }
 
         application.Status = await ResolveRunningStatusAsync(application.Subdomain, GetBaseDomain(configuration), ct);
@@ -485,7 +485,7 @@ public static class ApplicationsEndpoints
             parameters: null, result: new { application.Subdomain },
             sw.Elapsed, success: true);
 
-        return Results.Ok(ToResponse(application, GetBaseDomain(configuration)));
+        return Results.Ok(ToResponse(application, configuration));
     }
 
     private static async Task<IResult> DeleteAsync(
@@ -549,11 +549,37 @@ public static class ApplicationsEndpoints
         return envVars.ToDictionary(kv => kv.Key, kv => maskedKeys.Contains(kv.Key) ? "***" : kv.Value);
     }
 
+    /// <summary>409 si Portainer sigue desplegando el stack (se puede reintentar); 502 en cualquier otro fallo.</summary>
+    private static IResult StackActionFailed(string message, PortainerOperationResult result) =>
+        result.Busy
+            ? Results.Json(
+                new { message = "La aplicación todavía se está desplegando. Inténtalo de nuevo en unos segundos.", error = result.ErrorMessage },
+                statusCode: StatusCodes.Status409Conflict)
+            : Results.Json(new { message, error = result.ErrorMessage }, statusCode: StatusCodes.Status502BadGateway);
+
     private static string GetBaseDomain(IConfiguration configuration) =>
         configuration["BaseDomain"] ?? "ahoracenit.localhost";
 
-    private static ApplicationResponse ToResponse(Application application, string baseDomain)
+    /// <summary>
+    /// URL pública de la aplicación con el esquema y el puerto del portal
+    /// (p. ej. http://app.ahoracenit.localhost:8880 en local, https://app.midominio.com en producción).
+    /// </summary>
+    private static string BuildPublicUrl(string fullDomain, IConfiguration configuration)
     {
+        var scheme = "https";
+        var portSuffix = string.Empty;
+        if (Uri.TryCreate(configuration[$"{AuthOptions.SectionName}:PublicBaseUrl"], UriKind.Absolute, out var publicUri))
+        {
+            scheme = publicUri.Scheme;
+            portSuffix = publicUri.IsDefaultPort ? string.Empty : $":{publicUri.Port}";
+        }
+
+        return $"{scheme}://{fullDomain}{portSuffix}";
+    }
+
+    private static ApplicationResponse ToResponse(Application application, IConfiguration configuration)
+    {
+        var fullDomain = $"{application.Subdomain}.{GetBaseDomain(configuration)}";
         var envVars = string.IsNullOrWhiteSpace(application.EnvVarValuesJson)
             ? new Dictionary<string, string>()
             : JsonSerializer.Deserialize<Dictionary<string, string>>(application.EnvVarValuesJson, JsonOptions) ?? new();
@@ -566,7 +592,8 @@ public static class ApplicationsEndpoints
             application.User?.Name ?? string.Empty,
             application.User?.ClientSlug ?? string.Empty,
             application.Subdomain,
-            $"{application.Subdomain}.{baseDomain}",
+            fullDomain,
+            BuildPublicUrl(fullDomain, configuration),
             envVars,
             application.Status.ToString(),
             application.PortainerStackId,

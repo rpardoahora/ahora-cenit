@@ -22,6 +22,7 @@ public record ApplicationResponse(
     string OwnerClientSlug,
     string Subdomain,
     string FullDomain,
+    string Url,
     Dictionary<string, string> EnvVarValues,
     string Status,
     int? PortainerStackId,
