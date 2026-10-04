@@ -130,6 +130,11 @@ public static class ProductsEndpoints
             return Results.BadRequest(new { message = "Name y ComposeTemplate son obligatorios." });
         }
 
+        if (ValidateSchema(request.EnvVarsSchema) is { } schemaError)
+        {
+            return Results.BadRequest(new { message = schemaError });
+        }
+
         var product = new Product
         {
             Name = request.Name.Trim(),
@@ -173,6 +178,11 @@ public static class ProductsEndpoints
         if (string.IsNullOrWhiteSpace(request.Name) || string.IsNullOrWhiteSpace(request.ComposeTemplate))
         {
             return Results.BadRequest(new { message = "Name y ComposeTemplate son obligatorios." });
+        }
+
+        if (ValidateSchema(request.EnvVarsSchema) is { } schemaError)
+        {
+            return Results.BadRequest(new { message = schemaError });
         }
 
         product.Name = request.Name.Trim();
@@ -319,6 +329,12 @@ public static class ProductsEndpoints
                 continue;
             }
 
+            if (ValidateSchema(dto.EnvVarsSchema) is { } schemaError)
+            {
+                errors.Add(new ImportProductError(displayName, schemaError));
+                continue;
+            }
+
             try
             {
                 var existing = await db.Products
@@ -404,14 +420,50 @@ public static class ProductsEndpoints
         var definitions = (schema ?? [])
             .Select(d => new EnvVarDefinition
             {
-                Key = d.Key,
-                Label = d.Label,
-                DefaultValue = d.DefaultValue,
+                Key = d.Key.Trim(),
+                Label = string.IsNullOrWhiteSpace(d.Label) ? d.Key.Trim() : d.Label.Trim(),
+                DefaultValue = d.DefaultValue ?? string.Empty,
                 Mode = d.Mode
             })
             .ToList();
 
         return JsonSerializer.Serialize(definitions, JsonOptions);
+    }
+
+    /// <summary>Variables que el portal inyecta siempre al desplegar: un producto no puede redefinirlas.</summary>
+    private static readonly HashSet<string> ReservedEnvVarKeys = new(StringComparer.OrdinalIgnoreCase) { "APP_SUBDOMAIN", "BASE_DOMAIN" };
+
+    private static readonly System.Text.RegularExpressions.Regex EnvVarKeyPattern = new("^[A-Za-z_][A-Za-z0-9_]*$");
+
+    /// <summary>Devuelve un mensaje de error si el esquema de variables no es válido, o null si lo es.</summary>
+    private static string? ValidateSchema(List<EnvVarDefinitionDto>? schema)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var definition in schema ?? [])
+        {
+            var key = definition?.Key?.Trim();
+            if (string.IsNullOrEmpty(key) || !EnvVarKeyPattern.IsMatch(key))
+            {
+                return $"La variable '{key}' no es válida: usa letras, números y '_' (sin empezar por número).";
+            }
+
+            if (ReservedEnvVarKeys.Contains(key))
+            {
+                return $"La variable '{key}' está reservada: el portal la inyecta siempre al desplegar.";
+            }
+
+            if (!seen.Add(key))
+            {
+                return $"La variable '{key}' está repetida.";
+            }
+
+            if (!Enum.IsDefined(definition!.Mode))
+            {
+                return $"El modo de la variable '{key}' no es válido (Text, Secret, ReadOnly o Hidden).";
+            }
+        }
+
+        return null;
     }
 
     internal static List<EnvVarDefinition> DeserializeSchema(string json)

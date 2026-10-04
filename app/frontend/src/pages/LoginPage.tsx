@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react"
 import { Link, useLocation, useNavigate } from "react-router-dom"
 import { toast } from "sonner"
 import { useAuth } from "@/context/AuthContext"
+import { useConfig } from "@/context/ConfigContext"
 import { ApiError } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -10,6 +11,7 @@ import { Field, FieldGroup, FieldLabel, FieldError } from "@/components/ui/field
 
 export function LoginPage() {
   const { login } = useAuth()
+  const { registrationEnabled } = useConfig()
   const navigate = useNavigate()
   const location = useLocation()
   const [identifier, setIdentifier] = useState("")
@@ -81,12 +83,14 @@ export function LoginPage() {
               <Button type="submit" disabled={isSubmitting}>
                 {isSubmitting ? "Accediendo..." : "Entrar"}
               </Button>
-              <p className="text-center text-sm text-muted-foreground">
-                ¿No tienes cuenta?{" "}
-                <Link to="/registro" className="text-primary underline-offset-4 hover:underline">
-                  Regístrate
-                </Link>
-              </p>
+              {registrationEnabled && (
+                <p className="text-center text-sm text-muted-foreground">
+                  ¿No tienes cuenta?{" "}
+                  <Link to="/registro" className="text-primary underline-offset-4 hover:underline">
+                    Regístrate
+                  </Link>
+                </p>
+              )}
             </FieldGroup>
           </form>
         </CardContent>

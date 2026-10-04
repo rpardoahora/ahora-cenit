@@ -26,27 +26,31 @@ docker compose up -d          # aplica cambios hechos a mano en .env
 
 | Servicio | Imagen | Host público | Notas |
 |---|---|---|---|
-| `traefik` | `traefik:v3.6` | `traefik.DOMAIN` | Proxy inverso. Dashboard protegido con `auth/htpasswd`. El dominio raíz redirige a `cloud.DOMAIN`. |
+| `traefik` | `traefik:v3.6` | `traefik.DOMAIN` | Proxy inverso. Dashboard protegido con `auth/htpasswd`. |
 | `portainer` | `portainer/portainer-ce:lts` | `portainer.DOMAIN` | También en `127.0.0.1:9000` (solo loopback) para que el instalador lo configure por API. |
 | `registry` | `registry:3` | `registry.DOMAIN` | Registry privado con auth htpasswd. También en `127.0.0.1:5000` (en local Docker hace pull/push contra `localhost:5000`). |
 | `app` | `ghcr.io/rpardoahora/ahora-cenit` | `cloud.DOMAIN` | Portal (UI + `/api`). |
 | `sqlserver` | `mssql/server:2022` | — | Solo en la red interna `cenit_internal`. |
 | `openobserve` | `openobserve` | `telemetry.DOMAIN` | Trazas, métricas y logs de auditoría del portal (OTLP). |
-| `forgejo` | `codeberg.org/forgejo/forgejo:15` (LTS) | `nuget.DOMAIN` | Repositorio NuGet. SQLite, sin registro abierto ni SSH. También en `127.0.0.1:5100`: en local es su URL pública (`dotnet` no resuelve `*.localhost`). |
+| `nexus` | `sonatype/nexus3:3.96.4` | `nuget.DOMAIN` | Repositorio NuGet (Nexus Repository Community Edition). También en `127.0.0.1:5100`: en local es su URL pública (`dotnet` no resuelve `*.localhost`). Necesita ~2 GB de memoria (`NEXUS_JAVA_OPTS` en `.env` ajusta la JVM). |
 
 Volúmenes (todos con prefijo `cenit_`): `cenit_sqlserver_data`,
 `cenit_portainer_data`, `cenit_registry_data`, `cenit_openobserve_data`,
-`cenit_forgejo_data`, `cenit_letsencrypt`.
+`cenit_nexus_data`, `cenit_letsencrypt`.
 
-### NuGet (Forgejo)
+### NuGet (Nexus)
 
-El instalador crea el admin `cenit-admin` (CLI `forgejo admin user create`),
-las organizaciones `publico` (visibilidad *public*) e `interno` (*private*) y
-un token `cenit-nuget` (scopes `write:package`, `read:user`,
-`read:organization`) que guarda en `NUGET_TOKEN`. En Forgejo los permisos de
-paquetes van por propietario: los paquetes de una organización pública se
-leen de forma anónima; los de una privada solo sus miembros (con token).
-`FORGEJO_VERSION` en `.env` permite fijar otra versión.
+El instalador espera a que Nexus arranque y lo configura por su API REST:
+fija la contraseña de `admin` (la misma que el resto; Nexus arranca con una
+aleatoria en `/nexus-data/admin.password`), acepta el EULA de la edición
+Community (te lo pregunta), crea los feeds `internal` y `public` (NuGet
+*hosted*), borra los repositorios de ejemplo (maven y nuget), da al usuario
+anónimo un rol `public-read` que solo **lee** el feed `public`, y crea el
+usuario `cenit-admin` (rol `nx-admin`) con el token de plataforma `CENIT_TOKEN`
+como contraseña. Nexus respeta `X-Forwarded-Proto/Host`, así que los enlaces
+de los feeds salen bien detrás de Traefik. `NEXUS_VERSION` en `.env` permite
+fijar otra versión (no uses `latest`: Nexus migra su base de datos y no admite
+volver atrás).
 
 ## Cómo queda todo enlazado
 

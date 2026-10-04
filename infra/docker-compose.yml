@@ -14,8 +14,7 @@
 #   traefik.DOMAIN    dashboard de Traefik (usuario admin)
 #   registry.DOMAIN   Docker Registry privado (usuario admin)
 #   telemetry.DOMAIN  OpenObserve (trazas, métricas y logs)
-#   nuget.DOMAIN      Forgejo: repositorio de paquetes NuGet (usuario cenit-admin)
-#   DOMAIN            redirige a cloud.DOMAIN
+#   nuget.DOMAIN      Nexus: repositorio de paquetes NuGet (feeds public e internal)
 #   <slug>.DOMAIN     instancias de producto desplegadas desde el portal
 
 name: cenit
@@ -37,8 +36,8 @@ volumes:
     name: cenit_sqlserver_data
   openobserve_data:
     name: cenit_openobserve_data
-  forgejo_data:
-    name: cenit_forgejo_data
+  nexus_data:
+    name: cenit_nexus_data
   letsencrypt:
     name: cenit_letsencrypt
 
@@ -70,12 +69,6 @@ services:
       traefik.http.routers.traefik.service: api@internal
       traefik.http.routers.traefik.middlewares: cenit-auth
       traefik.http.middlewares.cenit-auth.basicauth.usersfile: /auth/htpasswd
-      # El dominio raíz redirige al portal.
-      traefik.http.routers.root.rule: Host(`${DOMAIN}`)
-      traefik.http.routers.root.service: noop@internal
-      traefik.http.routers.root.middlewares: root-to-cloud
-      traefik.http.middlewares.root-to-cloud.redirectregex.regex: ^https?://[^/]+/?(.*)
-      traefik.http.middlewares.root-to-cloud.redirectregex.replacement: ${PUBLIC_SCHEME}://cloud.${DOMAIN}${PUBLIC_PORT_SUFFIX:-}/$${1}
 
   portainer:
     image: portainer/portainer-ce:${PORTAINER_VERSION:-lts}
@@ -158,12 +151,16 @@ services:
       AdminSeed__Email: ${ADMIN_EMAIL}
       AdminSeed__Password: ${ADMIN_PASSWORD}
       Auth__RequireEmailConfirmation: ${REQUIRE_EMAIL_CONFIRMATION:-false}
+      # Valor INICIAL de "permitir el registro abierto"; luego manda lo que el admin fije en el panel (Ajustes).
+      Auth__RegistrationEnabled: ${REGISTRATION_ENABLED:-true}
       Auth__PublicBaseUrl: ${PUBLIC_SCHEME}://cloud.${DOMAIN}${PUBLIC_PORT_SUFFIX:-}
       Smtp__Host: ${SMTP_HOST:-}
       Smtp__Port: ${SMTP_PORT:-587}
       Smtp__User: ${SMTP_USER:-}
       Smtp__Password: ${SMTP_PASSWORD:-}
       Smtp__From: ${SMTP_FROM:-}
+      # Token de plataforma: autentica la API del portal (Bearer / X-Api-Key).
+      ApiAuth__Tokens: ${CENIT_TOKEN:-}
       # En local el feed NuGet no cuelga de *.localhost (localhost:5100): se pasa explícito.
       AdminTools__NuGetUrl: ${NUGET_PUBLIC_URL:-}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
@@ -178,35 +175,25 @@ services:
       traefik.http.routers.app.rule: Host(`cloud.${DOMAIN}`)
       traefik.http.services.app.loadbalancer.server.port: "8080"
 
-  # Repositorio de paquetes NuGet. La visibilidad va por organización: los
-  # paquetes de "publico" se descargan sin login; los de "interno" requieren token.
-  forgejo:
-    image: codeberg.org/forgejo/forgejo:${FORGEJO_VERSION:-15}
+  # Repositorio de paquetes NuGet (Nexus Repository Community Edition).
+  # Feeds: "public" (lectura anónima, escritura con usuario) e "internal"
+  # (lectura y escritura con usuario). Los crea el instalador.
+  nexus:
+    image: sonatype/nexus3:${NEXUS_VERSION:-3.96.4}
     restart: unless-stopped
     networks:
       - proxy
     ports:
       # En local los clientes NuGet (dotnet) no resuelven *.localhost: usan localhost:5100.
-      - "127.0.0.1:${NUGET_LOCAL_PORT:-5100}:3000"
+      - "127.0.0.1:${NUGET_LOCAL_PORT:-5100}:8081"
     environment:
-      USER_UID: "1000"
-      USER_GID: "1000"
-      FORGEJO__default__APP_NAME: ahora-cenit packages
-      FORGEJO__database__DB_TYPE: sqlite3
-      FORGEJO__server__ROOT_URL: ${NUGET_PUBLIC_URL}
-      FORGEJO__server__DOMAIN: nuget.${DOMAIN}
-      FORGEJO__server__DISABLE_SSH: "true"
-      FORGEJO__server__START_SSH_SERVER: "false"
-      FORGEJO__security__INSTALL_LOCK: "true"
-      FORGEJO__service__DISABLE_REGISTRATION: "true"
-      FORGEJO__service__REQUIRE_SIGNIN_VIEW: "false"
-      FORGEJO__packages__ENABLED: "true"
+      INSTALL4J_ADD_VM_PARAMS: ${NEXUS_JAVA_OPTS:--Xms512m -Xmx1g -XX:MaxDirectMemorySize=1g}
     volumes:
-      - forgejo_data:/data
+      - nexus_data:/nexus-data
     labels:
       traefik.enable: "true"
       traefik.http.routers.nuget.rule: Host(`nuget.${DOMAIN}`)
-      traefik.http.services.nuget.loadbalancer.server.port: "3000"
+      traefik.http.services.nuget.loadbalancer.server.port: "8081"
 
   openobserve:
     image: public.ecr.aws/zinclabs/openobserve:${OPENOBSERVE_VERSION:-latest}

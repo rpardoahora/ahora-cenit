@@ -29,8 +29,16 @@ public static class AuthEndpoints
         IJwtTokenService jwtTokenService,
         IEmailSender emailSender,
         IOptions<AuthOptions> authOptions,
+        IPortalSettings portalSettings,
         CancellationToken ct)
     {
+        if (!await portalSettings.IsRegistrationEnabledAsync(ct))
+        {
+            return Results.Json(
+                new { message = "El registro de nuevos usuarios está deshabilitado. Contacta con el administrador." },
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
         if (string.IsNullOrWhiteSpace(request.Email) ||
             string.IsNullOrWhiteSpace(request.Password) ||
             string.IsNullOrWhiteSpace(request.Name))
@@ -109,7 +117,9 @@ public static class AuthEndpoints
 
         if (user is null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
         {
-            return Results.Unauthorized();
+            return Results.Json(
+                new { message = "Usuario o contraseña incorrectos." },
+                statusCode: StatusCodes.Status401Unauthorized);
         }
 
         if (authOptions.Value.RequireEmailConfirmation && !user.EmailConfirmed)

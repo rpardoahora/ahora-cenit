@@ -147,12 +147,27 @@ public class PortainerClient : IPortainerClient
         // label que docker compose asigna automáticamente), no el campo Status del stack de
         // Portainer, que no se entera si alguien para/borra el contenedor fuera de la app.
         var containersStatus = await TryGetStatusFromContainersAsync(endpointId, stackName, ct);
-        if (containersStatus is not null)
+        if (containersStatus is ApplicationStatus.Running or ApplicationStatus.Stopped)
         {
             return containersStatus.Value;
         }
 
-        // No se pudo consultar el motor Docker (p.ej. permisos): fallback al estado del stack.
+        // Sin contenedores, o sin acceso al motor Docker: decide el estado del stack en
+        // Portainer. Ojo: Portainer para un stack con el equivalente a "docker compose down",
+        // que elimina los contenedores, así que "sin contenedores" también es un stack parado.
+        var stackStatus = await GetStatusFromStackAsync(stackId, ct);
+        if (containersStatus == ApplicationStatus.Deleted && stackStatus == ApplicationStatus.Running)
+        {
+            // Portainer lo da por activo pero sus contenedores ya no existen (borrados fuera de la app).
+            return ApplicationStatus.Deleted;
+        }
+
+        return stackStatus;
+    }
+
+    /// <summary>Estado según el propio stack de Portainer, o null si no se pudo determinar.</summary>
+    private async Task<ApplicationStatus?> GetStatusFromStackAsync(int stackId, CancellationToken ct)
+    {
         try
         {
             using var response = await _httpClient.GetAsync($"api/stacks/{stackId}", ct);

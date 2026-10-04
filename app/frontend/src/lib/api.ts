@@ -13,6 +13,7 @@ import type {
   DeployStats,
   ImportProductsResult,
   MessageResponse,
+  PortalSettings,
   Product,
   ProductExportEnvelope,
   ProductInput,
@@ -80,7 +81,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     throw new ApiError(0, message)
   }
 
-  if (res.status === 401) {
+  // Solo es una sesión caducada si se envió token; sin él (p. ej. el login)
+  // el 401 trae su propio mensaje y se trata como cualquier otro error.
+  if (res.status === 401 && token) {
     setToken(null)
     onUnauthorized?.()
     const message = "Tu sesión ha expirado. Inicia sesión de nuevo."
@@ -110,6 +113,14 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
 export const configApi = {
   get: () => request<AppConfig>("/config", { silent: true }),
+}
+
+// ---------- Admin settings ----------
+
+export const adminSettingsApi = {
+  get: () => request<PortalSettings>("/admin/settings"),
+  update: (settings: PortalSettings) =>
+    request<PortalSettings>("/admin/settings", { method: "PUT", body: settings }),
 }
 
 // ---------- Admin tools ----------

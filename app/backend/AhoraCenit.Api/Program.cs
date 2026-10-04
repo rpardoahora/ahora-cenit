@@ -1,11 +1,13 @@
 using System.Text;
 using AhoraCenit.Api.Data;
+using AhoraCenit.Api.Features.AdminSettings;
 using AhoraCenit.Api.Features.AdminTools;
 using AhoraCenit.Api.Features.Applications;
 using AhoraCenit.Api.Features.Auth;
 using AhoraCenit.Api.Features.Products;
 using AhoraCenit.Api.Features.Users;
 using AhoraCenit.Api.Services;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -31,6 +33,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 // --- Services ---
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
+builder.Services.AddScoped<IPortalSettings, PortalSettings>();
 builder.Services.AddSingleton<IAuditLogger, AuditLogger>();
 builder.Services.AddHttpClient<IPortainerClient, PortainerClient>(client =>
 {
@@ -104,11 +107,21 @@ var jwtSection = builder.Configuration.GetSection(JwtOptions.SectionName);
 var jwtSecret = jwtSection["Secret"] ?? string.Empty;
 var jwtIssuer = jwtSection["Issuer"] ?? "AhoraCenit";
 
+builder.Services.Configure<ApiAuthOptions>(builder.Configuration.GetSection(ApiAuthOptions.SectionName));
+
+// Dos formas de autenticarse: el JWT de sesión del portal y el token de API
+// (automatizaciones). El esquema por defecto elige uno u otro en cada petición.
 builder.Services.AddAuthentication(options =>
 {
-    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
-    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultScheme = ApiTokenDefaults.SelectorScheme;
+    options.DefaultAuthenticateScheme = ApiTokenDefaults.SelectorScheme;
+    options.DefaultChallengeScheme = ApiTokenDefaults.SelectorScheme;
 })
+.AddPolicyScheme(ApiTokenDefaults.SelectorScheme, "JWT o token de API", options =>
+{
+    options.ForwardDefaultSelector = ApiTokenDefaults.SelectScheme;
+})
+.AddScheme<AuthenticationSchemeOptions, ApiTokenAuthenticationHandler>(ApiTokenDefaults.Scheme, null)
 .AddJwtBearer(options =>
 {
     options.TokenValidationParameters = new TokenValidationParameters
@@ -150,10 +163,21 @@ builder.Services.AddSwaggerGen(options =>
     };
 
     options.AddSecurityDefinition(JwtBearerDefaults.AuthenticationScheme, jwtSecurityScheme);
+    options.AddSecurityDefinition(ApiTokenDefaults.Scheme, new Microsoft.OpenApi.OpenApiSecurityScheme
+    {
+        Name = ApiTokenDefaults.ApiKeyHeader,
+        In = Microsoft.OpenApi.ParameterLocation.Header,
+        Type = Microsoft.OpenApi.SecuritySchemeType.ApiKey,
+        Description = "Token de API de la plataforma (CENIT_TOKEN). También vale como 'Authorization: Bearer <token>'."
+    });
     options.AddSecurityRequirement(_ => new Microsoft.OpenApi.OpenApiSecurityRequirement
     {
         {
             new Microsoft.OpenApi.OpenApiSecuritySchemeReference(JwtBearerDefaults.AuthenticationScheme, null),
+            new List<string>()
+        },
+        {
+            new Microsoft.OpenApi.OpenApiSecuritySchemeReference(ApiTokenDefaults.Scheme, null),
             new List<string>()
         }
     });
@@ -185,11 +209,17 @@ app.MapGroup("/api/products").MapProductsEndpoints();
 app.MapGroup("/api/applications").MapApplicationsEndpoints();
 app.MapGroup("/api/users").MapUsersEndpoints();
 app.MapGroup("/api/admin/tools").MapAdminToolsEndpoints();
+app.MapGroup("/api/admin/settings").MapAdminSettingsEndpoints();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 
-app.MapGet("/api/config", (IConfiguration configuration) =>
-    Results.Ok(new { baseDomain = configuration["BaseDomain"] ?? "ahoracenit.localhost" }))
+// Configuración pública que necesita el frontend antes de iniciar sesión.
+app.MapGet("/api/config", async (IConfiguration configuration, IPortalSettings settings, CancellationToken ct) =>
+    Results.Ok(new
+    {
+        baseDomain = configuration["BaseDomain"] ?? "ahoracenit.localhost",
+        registrationEnabled = await settings.IsRegistrationEnabledAsync(ct)
+    }))
     .AllowAnonymous();
 
 // Frontend (Vite build) se sirve desde wwwroot, en el mismo servicio/puerto que la API.

@@ -44,7 +44,7 @@ public static class AdminToolsEndpoints
             new AdminToolResponse(
                 "nuget",
                 "Repositorio NuGet",
-                "Forgejo: paquetes NuGet públicos (organización publico) e internos (organización interno).",
+                "Nexus: paquetes NuGet en los feeds public (lectura anónima) e internal (solo con usuario).",
                 Resolve(tools.NuGetUrl, "nuget", baseDomain, publicBaseUrl)),
         });
     }

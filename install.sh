@@ -28,15 +28,15 @@ JQ_IMAGE="ghcr.io/jqlang/jq:1.7.1"
 HTPASSWD_IMAGE="httpd:2.4-alpine"
 HELPER_IMAGE="alpine:3.20"
 ADMIN_USER="admin"
-FORGEJO_ADMIN="cenit-admin"   # Forgejo reserva el nombre "admin"
-VOLUMES=(cenit_sqlserver_data cenit_portainer_data cenit_registry_data cenit_openobserve_data cenit_forgejo_data cenit_letsencrypt)
+PLATFORM_USER="cenit-admin"   # usuario de automatización (token de plataforma): registry y Nexus
+VOLUMES=(cenit_sqlserver_data cenit_portainer_data cenit_registry_data cenit_openobserve_data cenit_nexus_data cenit_letsencrypt)
 LEGACY_CONTAINERS=(traefik portainer app sqlserver openobserve)
 
 # Orden y comentarios con los que se escribe infra/.env.
 ENV_KEYS=(CENIT_MODE DOMAIN PUBLIC_SCHEME HTTP_PORT PUBLIC_PORT_SUFFIX COMPOSE_FILE COMPOSE_PATH_SEPARATOR ACME_EMAIL
   ADMIN_EMAIL ADMIN_PASSWORD DB_SA_PASSWORD MSSQL_PID JWT_SECRET APP_IMAGE APP_VERSION
   PORTAINER_API_KEY PORTAINER_ENDPOINT_ID PORTAINER_LOCAL_PORT REGISTRY_HOST REGISTRY_LOCAL_PORT
-  NUGET_PUBLIC_URL NUGET_LOCAL_PORT NUGET_TOKEN
+  NUGET_PUBLIC_URL NUGET_LOCAL_PORT CENIT_TOKEN
   REQUIRE_EMAIL_CONFIRMATION SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASSWORD SMTP_FROM
   OTEL_EXPORTER_OTLP_ENDPOINT)
 
@@ -77,6 +77,7 @@ ahora-cenit - instalador
 Opciones:
   --yes, -y          No preguntar: usar las respuestas por defecto
   --no-backup        En --update, no hacer la copia de seguridad previa
+  --http-port <n>    Solo modo local: puerto HTTP en el que publicar (por defecto 80)
   --help, -h         Esta ayuda
 EOF
 }
@@ -84,7 +85,7 @@ EOF
 # ----------------------------------------------------------------------------
 # Argumentos
 # ----------------------------------------------------------------------------
-CMD="install"; ASSUME_YES=0; NO_BACKUP=0; SKIP_GIT_PULL=0; RESTORE_DIR=""
+CMD="install"; ASSUME_YES=0; NO_BACKUP=0; SKIP_GIT_PULL=0; RESTORE_DIR=""; HTTP_PORT_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --update|-u|update)   CMD="update" ;;
@@ -94,11 +95,16 @@ while [ $# -gt 0 ]; do
     --yes|-y)             ASSUME_YES=1 ;;
     --no-backup)          NO_BACKUP=1 ;;
     --skip-git-pull)      SKIP_GIT_PULL=1 ;;
+    --http-port)          HTTP_PORT_ARG="${2:-}"; [ $# -gt 1 ] && shift ;;
     --help|-h|help)       usage; exit 0 ;;
     *) die "Opción desconocida: $1 (usa --help)" ;;
   esac
   shift
 done
+
+if [ -n "$HTTP_PORT_ARG" ] && { ! [[ "$HTTP_PORT_ARG" =~ ^[0-9]+$ ]] || [ "$HTTP_PORT_ARG" -lt 1 ] || [ "$HTTP_PORT_ARG" -gt 65535 ]; }; then
+  die "--http-port debe ser un puerto válido (1-65535)."
+fi
 
 if [ "$(id -u)" -ne 0 ]; then
   command -v sudo >/dev/null 2>&1 || die "Ejecuta este script como root."
@@ -160,11 +166,31 @@ has_forbidden_chars() { # comillas, barra invertida, acento grave o espacios rom
   return 1
 }
 
-valid_admin_password() {
-  local p="$1"
-  [ "${#p}" -ge 12 ] || return 1
-  [[ "$p" =~ [A-Z] ]] && [[ "$p" =~ [a-z] ]] && [[ "$p" =~ [0-9] ]] && [[ "$p" =~ [^A-Za-z0-9] ]] || return 1
-  ! has_forbidden_chars "$p"
+# Escribe el primer motivo por el que la contraseña no es segura (nada si vale).
+admin_password_problem() {
+  local p="$1" lower="${1,,}" w
+  [ "${#p}" -ge 12 ]         || { echo "tiene menos de 12 caracteres"; return; }
+  [[ "$p" =~ [A-Z] ]]        || { echo "le falta una mayúscula"; return; }
+  [[ "$p" =~ [a-z] ]]        || { echo "le falta una minúscula"; return; }
+  [[ "$p" =~ [0-9] ]]        || { echo "le falta un número"; return; }
+  [[ "$p" =~ [^A-Za-z0-9] ]] || { echo "le falta un símbolo"; return; }
+  if has_forbidden_chars "$p"; then echo 'contiene espacios, comillas, \ o `'; return; fi
+  if printf '%s' "$p" | grep -Eq '(.)\1\1\1'; then echo "repite el mismo carácter 4 veces seguidas"; return; fi
+  if [ "$(printf '%s' "$p" | fold -w1 | LC_ALL=C sort -u | wc -l)" -lt 8 ]; then
+    echo "tiene menos de 8 caracteres distintos"; return
+  fi
+  # Palabras y secuencias típicas, más el usuario del email y las partes del
+  # dominio (salvo la extensión: com, es...).
+  local -a words=(password passw0rd contrase qwerty asdf zxcv 1234 4321 abcd admin cenit ahora letmein welcome bienvenid changeme iloveyou)
+  local email_user="${CFG[ADMIN_EMAIL]:-}" dom="${CFG[DOMAIN]:-}" label
+  email_user="${email_user%%@*}"
+  [ "${#email_user}" -ge 3 ] && words+=("${email_user,,}")
+  for label in $(printf '%s' "${dom%.*}" | tr '.' ' '); do
+    [ "${#label}" -ge 4 ] && words+=("${label,,}")
+  done
+  for w in "${words[@]}"; do
+    if [[ "$lower" == *"$w"* ]]; then echo "contiene algo fácil de adivinar (\"$w\")"; return; fi
+  done
 }
 
 valid_email()  { [[ "$1" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] && ! has_forbidden_chars "$1"; }
@@ -217,9 +243,17 @@ apply_defaults() {
     CFG[REGISTRY_HOST]="localhost:${CFG[REGISTRY_LOCAL_PORT]:-5000}"
     : "${CFG[HTTP_PORT]:=80}"
   fi
+  if [ "$mode" != "production" ] && [ -n "$HTTP_PORT_ARG" ]; then CFG[HTTP_PORT]="$HTTP_PORT_ARG"; fi
   if [ "${CFG[HTTP_PORT]}" = "80" ]; then CFG[PUBLIC_PORT_SUFFIX]=""; else CFG[PUBLIC_PORT_SUFFIX]=":${CFG[HTTP_PORT]}"; fi
   : "${CFG[NUGET_LOCAL_PORT]:=5100}"
-  : "${CFG[NUGET_TOKEN]:=}"
+  # Versiones anteriores lo llamaban NUGET_TOKEN.
+  if [ -z "${CFG[CENIT_TOKEN]:-}" ] && [ -n "${CFG[NUGET_TOKEN]:-}" ]; then CFG[CENIT_TOKEN]="${CFG[NUGET_TOKEN]}"; fi
+  unset 'CFG[NUGET_TOKEN]'
+  if [ -z "${CFG[CENIT_TOKEN]:-}" ]; then
+    CFG[CENIT_TOKEN]="cenit_$(random_from 'A-Za-z0-9' 40)"
+    # Instalación existente sin token (o token borrado para rotarlo): hay que darlo de alta en el registry.
+    [ -f "$AUTH_DIR/htpasswd" ] && TOKEN_CHANGED=1
+  fi
   if [ "$mode" = "production" ]; then
     CFG[NUGET_PUBLIC_URL]="https://nuget.${CFG[DOMAIN]}/"
   else
@@ -265,7 +299,7 @@ write_env() {
         MSSQL_PID)         echo "# Edición de SQL Server: Express (gratis, apta para producción), Developer (solo pruebas) o Standard/Enterprise/clave con licencia." ;;
         APP_IMAGE)         echo; echo "# --- Imagen del portal (APP_VERSION: latest o sha-<commit> / v<versión>) ---" ;;
         PORTAINER_API_KEY) echo; echo "# --- Portainer / registry (rellenado por el instalador) ---" ;;
-        NUGET_PUBLIC_URL)  echo; echo "# --- NuGet (Forgejo). NUGET_TOKEN: token de $FORGEJO_ADMIN para publicar paquetes ---" ;;
+        NUGET_PUBLIC_URL)  echo; echo "# --- NuGet (Nexus) y token de plataforma. CENIT_TOKEN es la contraseña del usuario $PLATFORM_USER: vale para la API del portal, docker login y NuGet ---" ;;
         REQUIRE_EMAIL_CONFIRMATION) echo; echo "# --- Emails (SMTP vacío = los emails solo se escriben en el log) ---" ;;
         OTEL_EXPORTER_OTLP_ENDPOINT) echo; echo "# --- Telemetría (vacío = no exportar a OpenObserve) ---" ;;
       esac
@@ -309,8 +343,8 @@ check_system() {
     *) die "Arquitectura $arch no soportada: SQL Server solo funciona en x86_64 (amd64)." ;;
   esac
   local mem_kb; mem_kb="$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-  if [ "$mem_kb" -lt 3500000 ]; then
-    warn "La máquina tiene $((mem_kb / 1024)) MB de RAM. Se recomiendan al menos 4 GB (SQL Server necesita 2 GB)."
+  if [ "$mem_kb" -lt 5500000 ]; then
+    warn "La máquina tiene $((mem_kb / 1024)) MB de RAM. Se recomiendan al menos 8 GB (SQL Server y Nexus necesitan unos 2 GB cada uno)."
     ask_yes_no "¿Continuar de todos modos?" n || exit 1
   else
     ok "Memoria: $((mem_kb / 1024)) MB"
@@ -368,10 +402,28 @@ ensure_network() {
   docker network inspect proxy >/dev/null 2>&1 || { info "Creando red Docker 'proxy'"; docker network create proxy >/dev/null; }
 }
 
+# Usuarios del registry y del dashboard de Traefik: admin (contraseña de
+# administrador) y, si ya existe, cenit-admin con el token de plataforma.
 write_htpasswd() {
   mkdir -p "$AUTH_DIR"
-  docker run --rm --entrypoint htpasswd "$HTPASSWD_IMAGE" -Bbn "$ADMIN_USER" "$(cfg ADMIN_PASSWORD)" >"$AUTH_DIR/htpasswd"
+  local tmp="$AUTH_DIR/htpasswd.tmp"
+  docker run --rm --entrypoint htpasswd "$HTPASSWD_IMAGE" -Bbn "$ADMIN_USER" "$(cfg ADMIN_PASSWORD)" >"$tmp"
+  if [ -n "$(cfg CENIT_TOKEN)" ]; then
+    docker run --rm --entrypoint htpasswd "$HTPASSWD_IMAGE" -Bbn "$PLATFORM_USER" "$(cfg CENIT_TOKEN)" >>"$tmp"
+  fi
+  mv "$tmp" "$AUTH_DIR/htpasswd"
   chmod 644 "$AUTH_DIR/htpasswd"
+}
+
+# Tras crear/renovar el token de plataforma, darlo de alta en el registry.
+TOKEN_CHANGED=0
+sync_platform_token() {
+  [ -n "$(cfg CENIT_TOKEN)" ] || return 0
+  if [ "$TOKEN_CHANGED" -eq 1 ] || ! grep -q "^$PLATFORM_USER:" "$AUTH_DIR/htpasswd" 2>/dev/null; then
+    write_htpasswd
+    dc restart registry traefik >/dev/null
+    ok "Token de plataforma dado de alta en el registry (usuario $PLATFORM_USER)"
+  fi
 }
 
 port_busy() { command -v ss >/dev/null 2>&1 && ss -ltnH 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$1\$"; }
@@ -430,7 +482,7 @@ check_dns() {
   local public_ip host resolved bad=0
   public_ip="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
   info "IP pública de esta máquina: ${public_ip:-desconocida}"
-  for host in "$1" "cloud.$1" "registry.$1" "portainer.$1" "prueba-dns.$1"; do
+  for host in "cloud.$1" "registry.$1" "portainer.$1" "prueba-dns.$1"; do
     resolved="$(getent ahostsv4 "$host" 2>/dev/null | awk 'NR==1 {print $1}' || true)"
     if [ -z "$resolved" ]; then
       warn "$host no resuelve a ninguna IP"; bad=1
@@ -442,7 +494,7 @@ check_dns() {
   done
   if [ "$bad" -eq 1 ]; then
     warn "Sin DNS correcto Let's Encrypt no podrá emitir los certificados HTTPS."
-    warn "Crea dos registros A en tu proveedor DNS:  $1 -> IP   y   *.$1 -> IP"
+    warn "Crea un registro A comodín en tu proveedor DNS:  *.$1 -> IP"
     ask_yes_no "¿Continuar igualmente? (los certificados se emitirán solos cuando el DNS esté bien)" s || exit 1
   fi
 }
@@ -451,13 +503,15 @@ read_admin_password() {
   if [ "$ASSUME_YES" -eq 1 ]; then
     CFG[ADMIN_PASSWORD]="$(gen_secret 20)"; GENERATED_PASSWORD=1; return
   fi
-  echo "  Contraseña: mínimo 12 caracteres con mayúscula, minúscula, número y símbolo"
-  echo "  (sin espacios, comillas ni \\). Déjala vacía para generar una segura."
-  local p1 p2
+  echo "  Contraseña: mínimo 12 caracteres con mayúscula, minúscula, número y símbolo,"
+  echo "  sin palabras ni secuencias fáciles de adivinar (password, 1234, admin, tu email...)"
+  echo "  y sin espacios, comillas ni \\. Déjala vacía para generar una segura."
+  local p1 p2 problem
   while :; do
     p1="$(ask_secret "Contraseña")"
     if [ -z "$p1" ]; then CFG[ADMIN_PASSWORD]="$(gen_secret 20)"; GENERATED_PASSWORD=1; return; fi
-    if ! valid_admin_password "$p1"; then echo "  No cumple los requisitos."; continue; fi
+    problem="$(admin_password_problem "$p1")"
+    if [ -n "$problem" ]; then echo "  ${C_RED}No es segura: $problem.${C_RESET}"; continue; fi
     p2="$(ask_secret "Repite la contraseña")"
     if [ "$p1" = "$p2" ]; then CFG[ADMIN_PASSWORD]="$p1"; return; fi
     echo "  No coinciden."
@@ -515,8 +569,13 @@ collect_config() {
     echo "  Email no válido."
   done
 
-  local current_pw; current_pw="$(cfg ADMIN_PASSWORD)"
-  if [ -n "$current_pw" ] && { [ "$ASSUME_YES" -eq 1 ] || ask_yes_no "¿Mantener la contraseña de administrador actual?" s; }; then
+  local current_pw weak=""; current_pw="$(cfg ADMIN_PASSWORD)"
+  [ -n "$current_pw" ] && weak="$(admin_password_problem "$current_pw")"
+  if [ -n "$weak" ]; then
+    warn "La contraseña de administrador actual no es segura: $weak."
+    [ "$ASSUME_YES" -eq 1 ] && warn "Cámbiala reconfigurando sin --yes."
+  fi
+  if [ -n "$current_pw" ] && { [ "$ASSUME_YES" -eq 1 ] || { [ -z "$weak" ] && ask_yes_no "¿Mantener la contraseña de administrador actual?" s; }; }; then
     :
   else
     if [ -n "$current_pw" ]; then
@@ -689,58 +748,93 @@ configure_portainer() {
 }
 
 # ----------------------------------------------------------------------------
-# Forgejo (NuGet): admin, organizaciones publico/interno y token de publicación
+# Nexus Repository CE (NuGet): admin, EULA, feeds public/internal y usuario de automatización
 # ----------------------------------------------------------------------------
-fj() { # fj METODO RUTA [JSON] [auth-curl...] -> imprime el código HTTP; cuerpo en $PT_BODY
-  local method="$1" path="$2" data="${3:-}"; shift 3 || shift $#
-  local args=(-sS -o "$PT_BODY" -w '%{http_code}' -X "$method" --max-time 30 "$@")
-  [ -n "$data" ] && args+=(-H 'Content-Type: application/json' --data "$data")
-  curl "${args[@]}" "http://127.0.0.1:$(cfg NUGET_LOCAL_PORT)/api/v1$path" 2>/dev/null || true
+NX_USER="admin"; NX_PASS=""
+NEXUS_EULA_URL="https://links.sonatype.com/products/nxrm/ce-eula"
+
+nx() { # nx METODO RUTA [cuerpo] [content-type] -> imprime el código HTTP; cuerpo de la respuesta en $PT_BODY
+  local method="$1" path="$2" data="${3:-}" ctype="${4:-application/json}"
+  local args=(-sS -o "$PT_BODY" -w '%{http_code}' -X "$method" --max-time 60 -u "$NX_USER:$NX_PASS")
+  [ -n "$data" ] && args+=(-H "Content-Type: $ctype" --data "$data")
+  curl "${args[@]}" "http://127.0.0.1:$(cfg NUGET_LOCAL_PORT)/service/rest/v1$path" 2>/dev/null || true
 }
 
-configure_forgejo() {
-  section "Configurando el repositorio NuGet (Forgejo)"
-  local i
-  for i in $(seq 1 60); do
-    dc exec -T -u git forgejo forgejo admin user list >/dev/null 2>&1 && break
-    sleep 2
+nx_exists() { [ "$(nx GET "$1")" = "200" ]; }
+
+configure_nexus() {
+  section "Configurando el repositorio NuGet (Nexus)"
+  local port code i; port="$(cfg NUGET_LOCAL_PORT)"
+  info "Esperando a que Nexus arranque (la primera vez tarda 1-3 minutos)..."
+  for i in $(seq 1 120); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/service/rest/v1/status/writable" || true)"
+    [ "$code" = "200" ] && break
+    sleep 3
   done
-  dc exec -T -u git forgejo forgejo admin user list >/dev/null 2>&1 || die "Forgejo no arranca. Mira: cd infra && docker compose logs forgejo"
+  [ "$code" = "200" ] || die "Nexus no arranca. Mira: cd infra && docker compose logs nexus"
 
-  if ! dc exec -T -u git forgejo forgejo admin user list --admin 2>/dev/null | awk 'NR>1 {print $2}' | grep -qx "$FORGEJO_ADMIN"; then
-    dc exec -T -u git forgejo forgejo admin user create --admin --username "$FORGEJO_ADMIN" \
-      --password "$(cfg ADMIN_PASSWORD)" --email "$(cfg ADMIN_EMAIL)" --must-change-password=false >/dev/null
-    ok "Usuario $FORGEJO_ADMIN creado"
-  fi
-
-  # Si el token guardado sigue valiendo, todo está ya configurado.
-  if [ -n "$(cfg NUGET_TOKEN)" ] && [ "$(fj GET /user "" -H "Authorization: token $(cfg NUGET_TOKEN)")" = "200" ]; then
-    ok "Token NuGet existente válido"
-    return 0
-  fi
-
-  local auth=(-u "$FORGEJO_ADMIN:$(cfg ADMIN_PASSWORD)")
-  if [ "$(fj GET /user "" "${auth[@]}")" != "200" ]; then
-    warn "No se pudo entrar en Forgejo como $FORGEJO_ADMIN (¿se cambió su contraseña?). Crea el token de publicación desde su panel y ponlo en NUGET_TOKEN."
-    return 0
-  fi
-
-  local org vis code
-  for org in publico:public interno:private; do
-    vis="${org#*:}"; org="${org%%:*}"
-    if [ "$(fj GET "/orgs/$org" "" "${auth[@]}")" != "200" ]; then
-      code="$(fj POST /orgs "{\"username\":\"$org\",\"visibility\":\"$vis\"}" "${auth[@]}")"
-      [[ "$code" =~ ^20 ]] || die "No se pudo crear la organización $org en Forgejo (HTTP $code): $(cat "$PT_BODY")"
+  # Contraseña de admin: la misma que el resto. Nexus arranca con una aleatoria en /nexus-data/admin.password.
+  NX_USER="admin"; NX_PASS="$(cfg ADMIN_PASSWORD)"
+  if ! nx_exists /security/anonymous; then
+    local init; init="$(dc exec -T nexus cat /nexus-data/admin.password 2>/dev/null | tr -d '\r\n' || true)"
+    if [ -z "$init" ]; then
+      warn "No se pudo entrar en Nexus como admin (¿se cambió su contraseña?). Configúralo desde su panel."
+      return 0
     fi
-    ok "Organización '$org' ($vis)"
+    NX_PASS="$init"
+    code="$(nx PUT /security/users/admin/change-password "$(cfg ADMIN_PASSWORD)" text/plain)"
+    [[ "$code" =~ ^20 ]] || die "No se pudo fijar la contraseña de admin de Nexus (HTTP $code): $(cat "$PT_BODY")"
+    NX_PASS="$(cfg ADMIN_PASSWORD)"
+    ok "Contraseña de administrador de Nexus fijada"
+  fi
+
+  # Sin aceptar el EULA de la edición Community, Nexus no deja subir ni bajar paquetes.
+  nx GET /system/eula >/dev/null
+  if [ "$(jq_run -r '.accepted' <"$PT_BODY")" != "true" ]; then
+    echo "  Nexus Repository Community Edition se rige por el EULA de Sonatype: $NEXUS_EULA_URL"
+    echo "  (edición gratuita con límites: 40.000 componentes y 100.000 peticiones al día)."
+    if ask_yes_no "¿Aceptas ese EULA?" s; then
+      local body; body="$(jq_run -c '.accepted=true' <"$PT_BODY")"
+      code="$(nx POST /system/eula "$body")"
+      [[ "$code" =~ ^20 ]] || die "No se pudo aceptar el EULA de Nexus (HTTP $code): $(cat "$PT_BODY")"
+      ok "EULA de Nexus Community Edition aceptado"
+    else
+      warn "Sin aceptar el EULA, Nexus no permitirá subir ni descargar paquetes hasta que lo aceptes desde su panel."
+    fi
+  fi
+
+  # Feeds: internal (lectura y escritura con login) y public (lectura anónima, escritura con login).
+  local r
+  for r in internal public; do
+    if ! nx_exists "/repositories/$r"; then
+      code="$(nx POST /repositories/nuget/hosted "{\"name\":\"$r\",\"online\":true,\"storage\":{\"blobStoreName\":\"default\",\"strictContentTypeValidation\":true,\"writePolicy\":\"allow\"}}")"
+      [[ "$code" =~ ^20 ]] || die "No se pudo crear el feed '$r' en Nexus (HTTP $code): $(cat "$PT_BODY")"
+    fi
+    ok "Feed NuGet '$r'"
   done
 
-  fj DELETE "/users/$FORGEJO_ADMIN/tokens/cenit-nuget" "" "${auth[@]}" >/dev/null
-  code="$(fj POST "/users/$FORGEJO_ADMIN/tokens" '{"name":"cenit-nuget","scopes":["write:package","read:user","read:organization"]}' "${auth[@]}")"
-  [[ "$code" =~ ^20 ]] || die "No se pudo crear el token NuGet en Forgejo (HTTP $code): $(cat "$PT_BODY")"
-  CFG[NUGET_TOKEN]="$(jq_run -r '.sha1' <"$PT_BODY")"
-  write_env
-  ok "Token de publicación NuGet generado (NUGET_TOKEN en infra/.env)"
+  # Acceso anónimo limitado a LEER el feed public. Solo la primera vez (marca: existe el rol public-read).
+  if ! nx_exists /security/roles/public-read; then
+    code="$(nx POST /security/roles '{"id":"public-read","name":"public-read","description":"Lectura anonima del feed public","privileges":["nx-repository-view-nuget-public-read","nx-repository-view-nuget-public-browse"],"roles":[]}')"
+    [[ "$code" =~ ^20 ]] || die "No se pudo crear el rol public-read en Nexus (HTTP $code): $(cat "$PT_BODY")"
+    nx PUT /security/users/anonymous '{"userId":"anonymous","firstName":"Anonymous","lastName":"User","emailAddress":"anonymous@example.org","source":"default","status":"active","roles":["public-read"]}' >/dev/null
+    nx PUT /security/anonymous '{"enabled":true,"userId":"anonymous","realmName":"NexusAuthorizingRealm"}' >/dev/null
+    # Repositorios de ejemplo (maven, nuget) que trae Nexus: no hacen falta.
+    for r in maven-releases maven-snapshots maven-central maven-public nuget-hosted nuget.org-proxy nuget-group; do
+      nx DELETE "/repositories/$r" >/dev/null
+    done
+    ok "Acceso anónimo: solo lectura del feed public"
+  fi
+
+  # Usuario de automatización: cenit-admin, con el token de plataforma como contraseña.
+  nx GET "/security/users?userId=$PLATFORM_USER" >/dev/null
+  if [ "$(jq_run 'length' <"$PT_BODY")" != "0" ]; then
+    nx PUT "/security/users/$PLATFORM_USER/change-password" "$(cfg CENIT_TOKEN)" text/plain >/dev/null
+  else
+    code="$(nx POST /security/users "{\"userId\":\"$PLATFORM_USER\",\"firstName\":\"cenit\",\"lastName\":\"admin\",\"emailAddress\":\"$(cfg ADMIN_EMAIL)\",\"password\":\"$(cfg CENIT_TOKEN)\",\"status\":\"active\",\"roles\":[\"nx-admin\"]}")"
+    [[ "$code" =~ ^20 ]] || die "No se pudo crear el usuario $PLATFORM_USER en Nexus (HTTP $code): $(cat "$PT_BODY")"
+  fi
+  ok "Usuario $PLATFORM_USER (token de plataforma) en Nexus"
 }
 
 # ----------------------------------------------------------------------------
@@ -751,7 +845,8 @@ start_stack() {
   docker pull -q "$JQ_IMAGE" >/dev/null 2>&1 || true
   # Si no hay conexión pero las imágenes ya están en local, seguimos con ellas.
   dc pull --ignore-pull-failures || true
-  local app_image; app_image="$(cfg APP_IMAGE):$(cfg APP_VERSION)"
+  # Igual que docker compose: las variables de entorno mandan sobre el .env.
+  local app_image; app_image="${APP_IMAGE:-$(cfg APP_IMAGE)}:${APP_VERSION:-$(cfg APP_VERSION)}"
   if ! docker image inspect "$app_image" >/dev/null 2>&1; then
     die "No se pudo descargar la imagen del portal ($app_image). Si es privada, ejecuta antes: docker login ghcr.io"
   fi
@@ -775,28 +870,71 @@ wait_app() {
   warn "El portal todavía no responde. Revisa: cd infra && docker compose logs app"
 }
 
+# Tabla con bordes y una columna de color cada una. Cada fila son 4 campos
+# separados por ; la fila "-" pinta un separador. Las celdas van sin tildes
+# para que el ancho cuadre aunque sudo arranque con LANG=C.
+print_table() {
+  local -a w=(0 0 0 0) cells colors=("$C_BOLD" "$C_CYAN" "$C_GREEN" "$C_BOLD$C_YELLOW")
+  local r i text
+  for r in "$@"; do
+    [ "$r" = "-" ] && continue
+    IFS=$'' read -r -a cells <<<"$r"
+    for i in 0 1 2 3; do
+      text="${cells[i]:-}"
+      [ "${#text}" -gt "${w[i]}" ] && w[i]=${#text}
+    done
+  done
+  hline() { # izquierda cruce derecha
+    local out="  $C_CYAN$1" k
+    for i in 0 1 2 3; do
+      for ((k = 0; k < w[i] + 2; k++)); do out+="─"; done
+      [ "$i" -lt 3 ] && out+="$2"
+    done
+    printf '%s%s%s
+' "$out" "$3" "$C_RESET"
+  }
+  local header=1
+  hline "┌" "┬" "┐"
+  for r in "$@"; do
+    if [ "$r" = "-" ]; then hline "├" "┼" "┤"; continue; fi
+    IFS=$'' read -r -a cells <<<"$r"
+    local line="  $C_CYAN│$C_RESET" color
+    for i in 0 1 2 3; do
+      text="${cells[i]:-}"
+      color="${colors[i]}"; [ "$header" -eq 1 ] && color="$C_BOLD"
+      line+=" $color$text$C_RESET$(printf '%*s' $((w[i] - ${#text})) '') $C_CYAN│$C_RESET"
+    done
+    printf '%s
+' "$line"
+    if [ "$header" -eq 1 ]; then hline "╞" "╪" "╡"; header=0; fi
+  done
+  hline "└" "┴" "┘"
+}
+
 print_summary() {
   local s d p; s="$(cfg PUBLIC_SCHEME)"; d="$(cfg DOMAIN)"; p="$(cfg PUBLIC_PORT_SUFFIX)"
+  local email pass token reg nu; email="$(cfg ADMIN_EMAIL)"; pass="$(cfg ADMIN_PASSWORD)"
+  token="$(cfg CENIT_TOKEN)"; reg="$(cfg REGISTRY_HOST)"; nu="$(cfg NUGET_PUBLIC_URL)"
+  local F=$''
   section "Todo listo"
+  echo
+  print_table     "Servicio${F}URL${F}Usuario${F}Clave"     "Portal ahora-cenit${F}$s://cloud.$d$p${F}$email${F}$pass" "-"     "Portainer${F}$s://portainer.$d$p${F}$ADMIN_USER${F}$pass" "-"     "Traefik${F}$s://traefik.$d$p${F}$ADMIN_USER${F}$pass" "-"     "OpenObserve${F}$s://telemetry.$d$p${F}$email${F}$pass" "-"     "Registry Docker${F}$reg${F}$ADMIN_USER${F}$pass"     "${F}${F}$PLATFORM_USER${F}$token" "-"     "Repositorio NuGet${F}$nu${F}$ADMIN_USER${F}$pass"     "${F}${F}$PLATFORM_USER${F}$token" "-"     "API del portal${F}$s://cloud.$d$p/api${F}Bearer / X-Api-Key${F}$token" "-"     "SQL Server${F}sqlserver:1433 (red interna)${F}sa${F}$(cfg DB_SA_PASSWORD)" "-"     "Apps desplegadas${F}$s://<nombre>.$d$p${F}${F}"
   cat <<EOF
-  Portal ahora-cenit : $s://cloud.$d$p        (usuario: $(cfg ADMIN_EMAIL))
-  Portainer          : $s://portainer.$d$p    (usuario: $ADMIN_USER)
-  Traefik            : $s://traefik.$d$p      (usuario: $ADMIN_USER)
-  OpenObserve        : $s://telemetry.$d$p    (usuario: $(cfg ADMIN_EMAIL))
-  Docker Registry    : $(cfg REGISTRY_HOST)  (docker login $(cfg REGISTRY_HOST) -u $ADMIN_USER)
-  Repositorio NuGet  : $(cfg NUGET_PUBLIC_URL)  (usuario: $FORGEJO_ADMIN)
-     feed público    : $(cfg NUGET_PUBLIC_URL)api/packages/publico/nuget/index.json  (sin login)
-     feed interno    : $(cfg NUGET_PUBLIC_URL)api/packages/interno/nuget/index.json  (con token)
-     publicar        : dotnet nuget push <paquete>.nupkg -s <feed> -k <NUGET_TOKEN de infra/.env>
-  Apps desplegadas   : $s://<nombre>.$d$p
+
+  ${C_BOLD}Feeds NuGet${C_RESET}
+     public   : ${C_CYAN}${nu}repository/public/index.json${C_RESET}    (leer: sin login; escribir: con login)
+     internal : ${C_CYAN}${nu}repository/internal/index.json${C_RESET}  (leer y escribir: con login)
+
+  ${C_BOLD}Token de plataforma${C_RESET} (CENIT_TOKEN, usuario $PLATFORM_USER)
+     API    : curl -H "Authorization: Bearer $token" $s://cloud.$d$p/api/products
+     Docker : docker login $reg -u $PLATFORM_USER -p $token
 EOF
+  echo
   if [ "$GENERATED_PASSWORD" -eq 1 ]; then
-    printf '\n  %sContraseña de administrador generada: %s%s\n' "$C_BOLD$C_YELLOW" "$(cfg ADMIN_PASSWORD)" "$C_RESET"
-    echo "  Apúntala. También está guardada en infra/.env (ADMIN_PASSWORD)."
-  else
-    echo
-    echo "  Contraseña: la que has indicado (guardada en infra/.env)."
+    printf '  %sLa contraseña de administrador se ha generado automáticamente: apúntala.%s
+' "$C_BOLD$C_YELLOW" "$C_RESET"
   fi
+  echo "  Todas las credenciales están guardadas en infra/.env."
   if [ "$(cfg CENIT_MODE)" = "production" ]; then
     echo "  Los certificados HTTPS se emiten solos en el primer acceso a cada subdominio."
   fi
@@ -839,7 +977,8 @@ do_install() {
   ensure_network
   start_stack
   configure_portainer
-  configure_forgejo
+  configure_nexus
+  sync_platform_token
   dc up -d --remove-orphans   # recrea el portal con la API key de Portainer
   wait_app
   print_summary
@@ -856,6 +995,7 @@ do_update() {
       local next=(--update --skip-git-pull)
       [ "$ASSUME_YES" -eq 1 ] && next+=(--yes)
       [ "$NO_BACKUP" -eq 1 ] && next+=(--no-backup)
+      [ -n "$HTTP_PORT_ARG" ] && next+=(--http-port "$HTTP_PORT_ARG")
       rm -f "$PT_BODY"
       exec bash "$SCRIPT_DIR/install.sh" "${next[@]}"
     fi
@@ -874,7 +1014,8 @@ do_update() {
   ensure_network
   start_stack
   configure_portainer
-  configure_forgejo
+  configure_nexus
+  sync_platform_token
   dc up -d --remove-orphans
   info "Limpiando imágenes antiguas..."
   docker image prune -f >/dev/null

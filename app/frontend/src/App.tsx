@@ -17,6 +17,8 @@ import { UsersListPage } from "@/pages/admin/UsersListPage"
 import { UserFormPage } from "@/pages/admin/UserFormPage"
 import { UsageDashboardPage } from "@/pages/admin/UsageDashboardPage"
 import { AdminToolsPage } from "@/pages/admin/AdminToolsPage"
+import { AdminSettingsPage } from "@/pages/admin/AdminSettingsPage"
+import { ConfigProvider } from "@/context/ConfigContext"
 import { ForgotPasswordPage } from "@/pages/ForgotPasswordPage"
 import { ResetPasswordPage } from "@/pages/ResetPasswordPage"
 import { ConfirmEmailPage } from "@/pages/ConfirmEmailPage"
@@ -24,6 +26,7 @@ import { ConfirmEmailPage } from "@/pages/ConfirmEmailPage"
 function App() {
   return (
     <BrowserRouter>
+      <ConfigProvider>
       <AuthProvider>
         <Routes>
           <Route element={<Layout />}>
@@ -51,12 +54,14 @@ function App() {
                 <Route path="usuarios/:id/editar" element={<UserFormPage />} />
                 <Route path="consumo" element={<UsageDashboardPage />} />
                 <Route path="herramientas" element={<AdminToolsPage />} />
+                <Route path="ajustes" element={<AdminSettingsPage />} />
               </Route>
             </Route>
           </Route>
         </Routes>
         <Toaster />
       </AuthProvider>
+      </ConfigProvider>
     </BrowserRouter>
   )
 }

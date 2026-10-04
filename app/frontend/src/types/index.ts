@@ -2,6 +2,12 @@ export type Role = "Admin" | "Cliente"
 
 export interface AppConfig {
   baseDomain: string
+  /** Si es false, nadie puede crearse una cuenta desde el portal (solo un admin). */
+  registrationEnabled: boolean
+}
+
+export interface PortalSettings {
+  registrationEnabled: boolean
 }
 
 export interface AdminTool {

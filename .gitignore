@@ -46,3 +46,6 @@ backups/
 .DS_Store
 Thumbs.db
 *.sw?
+
+# Override de pruebas locales (contiene un secreto)
+infra/docker-compose.test.yml

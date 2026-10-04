@@ -43,10 +43,25 @@ public static class ApplicationsEndpoints
     {
         var sw = Stopwatch.StartNew();
         var userId = principal.GetUserId();
+
+        // Un admin (o el token de API) puede desplegar en nombre de un cliente.
+        var onBehalfOfClient = request.UserId is { } ownerId && ownerId != userId;
+        if (onBehalfOfClient)
+        {
+            if (!principal.IsAdmin())
+            {
+                return Results.Forbid();
+            }
+
+            userId = request.UserId!.Value;
+        }
+
         var user = await db.Users.FindAsync([userId], ct);
         if (user is null)
         {
-            return Results.Unauthorized();
+            return onBehalfOfClient
+                ? Results.BadRequest(new { message = "El cliente indicado (userId) no existe." })
+                : Results.Unauthorized();
         }
 
         var product = await db.Products.FindAsync([request.ProductId], ct);

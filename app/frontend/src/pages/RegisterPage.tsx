@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { toast } from "sonner"
 import { useAuth } from "@/context/AuthContext"
+import { useConfig } from "@/context/ConfigContext"
 import { ApiError } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -10,6 +11,7 @@ import { Field, FieldGroup, FieldLabel, FieldError } from "@/components/ui/field
 
 export function RegisterPage() {
   const { register } = useAuth()
+  const { registrationEnabled, isLoading: configLoading } = useConfig()
   const navigate = useNavigate()
   const [name, setName] = useState("")
   const [email, setEmail] = useState("")
@@ -38,6 +40,27 @@ export function RegisterPage() {
     } finally {
       setIsSubmitting(false)
     }
+  }
+
+  if (!configLoading && !registrationEnabled) {
+    return (
+      <div className="mx-auto max-w-sm">
+        <Card>
+          <CardHeader>
+            <CardTitle>Registro deshabilitado</CardTitle>
+            <CardDescription>
+              Ahora mismo no se admiten altas nuevas desde esta página. Si necesitas una
+              cuenta, contacta con el administrador.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Link to="/login" className="text-sm text-primary underline-offset-4 hover:underline">
+              Ya tengo cuenta: iniciar sesión
+            </Link>
+          </CardContent>
+        </Card>
+      </div>
+    )
   }
 
   if (pendingMessage) {

@@ -18,7 +18,7 @@ ahora-cenit (se comunican por red).
 | [Traefik](https://github.com/traefik/traefik) | MIT | Proxy inverso y certificados HTTPS. |
 | [Portainer CE](https://github.com/portainer/portainer) | zlib | Gestión de contenedores. |
 | [Distribution (Docker Registry)](https://github.com/distribution/distribution) | Apache-2.0 | Registry privado de imágenes. |
-| [Forgejo](https://codeberg.org/forgejo/forgejo) | GPL-3.0-or-later | Repositorio NuGet. Se usa sin modificar. |
+| [Sonatype Nexus Repository Community Edition](https://www.sonatype.com/products/nexus-repository-community-edition/learn) | Licencia propietaria de Sonatype ([EULA](https://links.sonatype.com/products/nxrm/ce-eula)) | Repositorio NuGet. Gratuita con límites (40.000 componentes y 100.000 peticiones/día). El instalador pide aceptar su EULA. |
 | [OpenObserve](https://github.com/openobserve/openobserve) | AGPL-3.0 | Telemetría. Se usa sin modificar. Si modificas OpenObserve y lo ofreces por red, la AGPL te obliga a publicar esas modificaciones. |
 | [Microsoft SQL Server 2022](https://www.microsoft.com/sql-server) | Licencia propietaria de Microsoft ([EULA](https://go.microsoft.com/fwlink/?linkid=857698)) | Por defecto se instala la edición **Express** (gratuita, apta para producción, máx. 10 GB por base de datos). Al instalar se acepta su EULA (`ACCEPT_EULA=Y`). Ver más abajo. |
 | [Docker Engine](https://github.com/moby/moby) | Apache-2.0 | En Linux y Windows Server. |

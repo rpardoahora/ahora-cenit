@@ -55,6 +55,9 @@ public class AuditLogger(ILogger<AuditLogger> logger) : IAuditLogger
     {
         var actorId = principal.Identity?.IsAuthenticated == true ? principal.GetUserId().ToString() : "anonymous";
         var actorEmail = principal.FindFirstValue(ClaimTypes.Email) ?? "unknown";
+        // "api-token" cuando actúa una automatización con el token de API; "session" si es un usuario con JWT.
+        var authMethod = principal.FindFirstValue(ApiTokenDefaults.AuthMethodClaimType)
+            ?? (principal.Identity?.IsAuthenticated == true ? "session" : "anonymous");
         var parametersJson = Serialize(parameters);
         var resultJson = Serialize(result);
         var startTime = DateTimeOffset.UtcNow - duration;
@@ -64,6 +67,7 @@ public class AuditLogger(ILogger<AuditLogger> logger) : IAuditLogger
         {
             activity.SetTag("audit.actor.id", actorId);
             activity.SetTag("audit.actor.email", actorEmail);
+            activity.SetTag("audit.actor.auth_method", authMethod);
             activity.SetTag("audit.entity.type", entityType);
             activity.SetTag("audit.entity.id", entityId?.ToString());
             activity.SetTag("audit.action", action);
@@ -88,8 +92,8 @@ public class AuditLogger(ILogger<AuditLogger> logger) : IAuditLogger
         ActionDuration.Record(duration.TotalSeconds, metricTags);
 
         logger.LogInformation(
-            "Audit {EntityType}.{Action} entityId={EntityId} actor={ActorEmail} ({ActorId}) durationMs={DurationMs} success={Success} error={Error} parameters={Parameters} result={Result}",
-            entityType, action, entityId, actorEmail, actorId, duration.TotalMilliseconds, success, errorMessage, parametersJson, resultJson);
+            "Audit {EntityType}.{Action} entityId={EntityId} actor={ActorEmail} ({ActorId}) via={AuthMethod} durationMs={DurationMs} success={Success} error={Error} parameters={Parameters} result={Result}",
+            entityType, action, entityId, actorEmail, actorId, authMethod, duration.TotalMilliseconds, success, errorMessage, parametersJson, resultJson);
 
         return Task.CompletedTask;
     }

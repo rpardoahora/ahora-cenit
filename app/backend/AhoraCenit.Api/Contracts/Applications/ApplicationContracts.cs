@@ -1,9 +1,15 @@
 namespace AhoraCenit.Api.Contracts.Applications;
 
+/// <param name="UserId">
+/// Cliente propietario de la aplicación. Solo un admin (o el token de API) puede
+/// indicarlo, para desplegar en nombre de un cliente; si se omite, la
+/// aplicación es de quien hace la petición.
+/// </param>
 public record CreateApplicationRequest(
     Guid ProductId,
     string? Subdomain,
-    Dictionary<string, string>? EnvVars);
+    Dictionary<string, string>? EnvVars,
+    Guid? UserId = null);
 
 public record SetApplicationActiveRequest(bool IsActive);
 

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Settings01Icon } from "@hugeicons/core-free-icons"
 import { useAuth } from "@/context/AuthContext"
+import { useConfig } from "@/context/ConfigContext"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { ProfileDialog } from "@/components/ProfileDialog"
@@ -18,6 +19,7 @@ function initials(name: string) {
 
 export function Navbar() {
   const { user } = useAuth()
+  const { registrationEnabled } = useConfig()
   const [profileOpen, setProfileOpen] = useState(false)
 
   return (
@@ -61,9 +63,11 @@ export function Navbar() {
                 <span className="hidden sm:inline">Iniciar sesión</span>
                 <span className="sm:hidden">Entrar</span>
               </Button>
-              <Button size="sm" className="px-2 sm:px-3" render={<Link to="/registro" />}>
-                Registrarse
-              </Button>
+              {registrationEnabled && (
+                <Button size="sm" className="px-2 sm:px-3" render={<Link to="/registro" />}>
+                  Registrarse
+                </Button>
+              )}
             </div>
           ) : (
             <>

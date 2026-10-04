@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { productsApi } from "@/lib/api"
 import { useAuth } from "@/context/AuthContext"
+import { useConfig } from "@/context/ConfigContext"
 import type { Product } from "@/types"
 import {
   Card,
@@ -19,6 +20,7 @@ function openWebsitePopup(url: string) {
 
 export function CatalogPage() {
   const { user } = useAuth()
+  const { registrationEnabled } = useConfig()
   const navigate = useNavigate()
   const [products, setProducts] = useState<Product[] | null>(null)
 
@@ -31,7 +33,7 @@ export function CatalogPage() {
 
   function handleInstall(productId: string) {
     if (!user) {
-      navigate("/registro")
+      navigate(registrationEnabled ? "/registro" : "/login")
       return
     }
     navigate(`/desplegar/${productId}`)

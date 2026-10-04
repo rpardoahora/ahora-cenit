@@ -6,6 +6,7 @@ const NAV_ITEMS = [
   { to: "/admin/usuarios", label: "Usuarios" },
   { to: "/admin/consumo", label: "Consumo" },
   { to: "/admin/herramientas", label: "Herramientas" },
+  { to: "/admin/ajustes", label: "Ajustes" },
 ]
 
 export function AdminLayout() {

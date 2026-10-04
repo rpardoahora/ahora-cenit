@@ -32,8 +32,8 @@ $BackupRoot = Join-Path $ScriptRoot 'backups'
 $HtpasswdImage  = 'httpd:2.4-alpine'
 $HelperImage    = 'alpine:3.20'
 $AdminUser      = 'admin'
-$ForgejoAdmin   = 'cenit-admin'   # Forgejo reserva el nombre "admin"
-$Volumes        = @('cenit_sqlserver_data', 'cenit_portainer_data', 'cenit_registry_data', 'cenit_openobserve_data', 'cenit_forgejo_data', 'cenit_letsencrypt')
+$PlatformUser   = 'cenit-admin'   # usuario de automatizacion (token de plataforma): registry y Nexus
+$Volumes        = @('cenit_sqlserver_data', 'cenit_portainer_data', 'cenit_registry_data', 'cenit_openobserve_data', 'cenit_nexus_data', 'cenit_letsencrypt')
 $LegacyContainers = @('traefik', 'portainer', 'app', 'sqlserver', 'openobserve')
 $DockerDesktopUrl = 'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe'
 
@@ -47,7 +47,7 @@ $BootTaskName = 'AhoraCenit-WSL'
 $EnvKeys = @('CENIT_MODE', 'DOMAIN', 'PUBLIC_SCHEME', 'HTTP_PORT', 'PUBLIC_PORT_SUFFIX', 'COMPOSE_FILE', 'COMPOSE_PATH_SEPARATOR', 'ACME_EMAIL',
     'ADMIN_EMAIL', 'ADMIN_PASSWORD', 'DB_SA_PASSWORD', 'MSSQL_PID', 'JWT_SECRET', 'APP_IMAGE', 'APP_VERSION',
     'PORTAINER_API_KEY', 'PORTAINER_ENDPOINT_ID', 'PORTAINER_LOCAL_PORT', 'REGISTRY_HOST', 'REGISTRY_LOCAL_PORT',
-    'NUGET_PUBLIC_URL', 'NUGET_LOCAL_PORT', 'NUGET_TOKEN',
+    'NUGET_PUBLIC_URL', 'NUGET_LOCAL_PORT', 'CENIT_TOKEN',
     'REQUIRE_EMAIL_CONFIRMATION', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASSWORD', 'SMTP_FROM',
     'OTEL_EXPORTER_OTLP_ENDPOINT')
 
@@ -78,6 +78,7 @@ ahora-cenit - instalador
 Opciones:
   --yes, -y        No preguntar: usar las respuestas por defecto
   --no-backup      En --update, no hacer la copia de seguridad previa
+  --http-port <n>  Solo modo local: puerto HTTP en el que publicar (por defecto 80)
   --help, -h       Esta ayuda
 '@ | Write-Host
 }
@@ -86,7 +87,7 @@ Opciones:
 # Argumentos (mismo formato que install.sh)
 # ----------------------------------------------------------------------------
 $Command = 'install'; $AssumeYes = $false; $NoBackup = $false; $SkipGitPull = $false
-$RestoreDir = ''; $Elevated = $false
+$RestoreDir = ''; $Elevated = $false; $HttpPortArg = ''
 $PassThroughArgs = New-Object System.Collections.Generic.List[string]
 for ($i = 0; $i -lt $args.Count; $i++) {
     $a = [string]$args[$i]
@@ -101,10 +102,17 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         '^(--yes|-y|-yes)$'                { $AssumeYes = $true; $PassThroughArgs.Add('--yes') }
         '^(--no-backup|-nobackup)$'        { $NoBackup = $true; $PassThroughArgs.Add('--no-backup') }
         '^--skip-git-pull$'                { $SkipGitPull = $true }
+        '^--http-port$'                    {
+            if ($i + 1 -lt $args.Count) { $i++; $HttpPortArg = [string]$args[$i]; $PassThroughArgs.Add('--http-port'); $PassThroughArgs.Add($HttpPortArg) }
+        }
         '^--elevated$'                     { $Elevated = $true }
         '^(--help|-h|help|-help|/\?)$'     { Show-Usage; exit 0 }
         default                            { Write-Host "Opcion desconocida: $a (usa --help)" -ForegroundColor Red; exit 1 }
     }
+}
+
+if ($HttpPortArg -and (-not ($HttpPortArg -match '^\d+$') -or [int]$HttpPortArg -lt 1 -or [int]$HttpPortArg -gt 65535)) {
+    Write-Host "--http-port debe ser un puerto valido (1-65535)." -ForegroundColor Red; exit 1
 }
 
 function Get-HostExe { (Get-Process -Id $PID).Path }
@@ -160,10 +168,27 @@ function Read-Choice([string]$Prompt, [string[]]$Options, [int]$Default = 1) {
 
 function Test-ForbiddenChars([string]$Value) { return ($Value -match "[\s'`"\\``]") }
 
-function Test-AdminPassword([string]$p) {
-    if ($p.Length -lt 12) { return $false }
-    if ($p -cnotmatch '[A-Z]' -or $p -cnotmatch '[a-z]' -or $p -notmatch '[0-9]' -or $p -notmatch '[^A-Za-z0-9]') { return $false }
-    return -not (Test-ForbiddenChars $p)
+# Devuelve el primer motivo por el que la contrasena no es segura ('' si vale).
+function Get-AdminPasswordProblem([string]$p) {
+    if ($p.Length -lt 12) { return 'tiene menos de 12 caracteres' }
+    if ($p -cnotmatch '[A-Z]') { return 'le falta una mayuscula' }
+    if ($p -cnotmatch '[a-z]') { return 'le falta una minuscula' }
+    if ($p -notmatch '[0-9]') { return 'le falta un numero' }
+    if ($p -notmatch '[^A-Za-z0-9]') { return 'le falta un simbolo' }
+    if (Test-ForbiddenChars $p) { return 'contiene espacios, comillas, \ o `' }
+    if ($p -cmatch '(.)\1\1\1') { return 'repite el mismo caracter 4 veces seguidas' }
+    if ([System.Collections.Generic.HashSet[char]]::new($p.ToCharArray()).Count -lt 8) { return 'tiene menos de 8 caracteres distintos' }
+    # Palabras y secuencias tipicas, mas el usuario del email y las partes del
+    # dominio (salvo la extension: com, es...).
+    $words = [System.Collections.Generic.List[string]]@('password', 'passw0rd', 'contrase', 'qwerty', 'asdf', 'zxcv', '1234', '4321', 'abcd',
+        'admin', 'cenit', 'ahora', 'letmein', 'welcome', 'bienvenid', 'changeme', 'iloveyou')
+    $emailUser = (Get-Cfg 'ADMIN_EMAIL').Split('@')[0]
+    if ($emailUser.Length -ge 3) { $words.Add($emailUser.ToLowerInvariant()) }
+    $labels = (Get-Cfg 'DOMAIN').Split('.')
+    foreach ($label in $labels[0..([Math]::Max(0, $labels.Count - 2))]) { if ($label.Length -ge 4) { $words.Add($label.ToLowerInvariant()) } }
+    $lower = $p.ToLowerInvariant()
+    foreach ($w in $words) { if ($lower.Contains($w)) { return "contiene algo facil de adivinar (`"$w`")" } }
+    return ''
 }
 
 function Test-Email([string]$v)  { return ($v -match '^[^@\s]+@[^@\s]+\.[^@\s]+$') -and -not (Test-ForbiddenChars $v) }
@@ -242,8 +267,17 @@ function Set-Defaults {
         $script:Cfg['REGISTRY_HOST'] = "localhost:" + (Get-Cfg 'REGISTRY_LOCAL_PORT')
         Set-CfgDefault 'HTTP_PORT' '80'
     }
+    if ((Get-Cfg 'CENIT_MODE') -ne 'production' -and $HttpPortArg) { $script:Cfg['HTTP_PORT'] = $HttpPortArg }
     if ((Get-Cfg 'HTTP_PORT') -eq '80') { $script:Cfg['PUBLIC_PORT_SUFFIX'] = '' } else { $script:Cfg['PUBLIC_PORT_SUFFIX'] = ':' + (Get-Cfg 'HTTP_PORT') }
     Set-CfgDefault 'NUGET_LOCAL_PORT' '5100'
+    # Versiones anteriores lo llamaban NUGET_TOKEN.
+    if (-not (Get-Cfg 'CENIT_TOKEN') -and (Get-Cfg 'NUGET_TOKEN')) { $script:Cfg['CENIT_TOKEN'] = Get-Cfg 'NUGET_TOKEN' }
+    if (-not (Get-Cfg 'CENIT_TOKEN')) {
+        $script:Cfg['CENIT_TOKEN'] = 'cenit_' + (New-RandomString 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789' 40)
+        # Instalacion existente sin token (o token borrado para rotarlo): hay que darlo de alta en el registry.
+        if (Test-Path (Join-Path $AuthDir 'htpasswd')) { $script:TokenChanged = $true }
+    }
+    if ($script:Cfg.Contains('NUGET_TOKEN')) { $script:Cfg.Remove('NUGET_TOKEN') }
     if ((Get-Cfg 'CENIT_MODE') -eq 'production') { $script:Cfg['NUGET_PUBLIC_URL'] = "https://nuget.$(Get-Cfg 'DOMAIN')/" }
     else { $script:Cfg['NUGET_PUBLIC_URL'] = "http://localhost:$(Get-Cfg 'NUGET_LOCAL_PORT')/" }
     $script:Cfg['COMPOSE_PATH_SEPARATOR'] = ':'
@@ -271,7 +305,7 @@ function Export-EnvFile {
         'MSSQL_PID'                   = @('# Edicion de SQL Server: Express (gratis, apta para produccion), Developer (solo pruebas) o Standard/Enterprise/clave con licencia.')
         'APP_IMAGE'                   = @('', '# --- Imagen del portal (APP_VERSION: latest o sha-<commit> / v<version>) ---')
         'PORTAINER_API_KEY'           = @('', '# --- Portainer / registry (rellenado por el instalador) ---')
-        'NUGET_PUBLIC_URL'            = @('', "# --- NuGet (Forgejo). NUGET_TOKEN: token de $ForgejoAdmin para publicar paquetes ---")
+        'NUGET_PUBLIC_URL'            = @('', "# --- NuGet (Nexus) y token de plataforma. CENIT_TOKEN es la contrasena del usuario ${PlatformUser}: vale para la API del portal, docker login y NuGet ---")
         'REQUIRE_EMAIL_CONFIRMATION'  = @('', '# --- Emails (SMTP vacio = los emails solo se escriben en el log) ---')
         'OTEL_EXPORTER_OTLP_ENDPOINT' = @('', '# --- Telemetria (vacio = no exportar a OpenObserve) ---')
     }
@@ -382,7 +416,7 @@ function Confirm-System {
     }
     $memGb = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
     if ($memGb -lt 8) {
-        Write-Warn "El equipo tiene $memGb GB de RAM. Con Docker Desktop se recomiendan al menos 8 GB."
+        Write-Warn "El equipo tiene $memGb GB de RAM. Con Docker Desktop, SQL Server y Nexus se recomiendan al menos 8 GB."
         if (-not (Read-YesNo "Continuar de todos modos?" $false)) { exit 1 }
     } else { Write-Ok "Memoria: $memGb GB" }
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
@@ -398,13 +432,32 @@ function Confirm-Network {
     if ($LASTEXITCODE -ne 0) { Write-Info "Creando red Docker 'proxy'"; Invoke-Native { docker network create proxy | Out-Null } "No se pudo crear la red proxy" }
 }
 
+# Usuarios del registry y del dashboard de Traefik: admin (contrasena de
+# administrador) y, si ya existe, cenit-admin con el token de plataforma.
+function New-HtpasswdLine([string]$User, [string]$Password) {
+    $out = Invoke-Native { docker run --rm --entrypoint htpasswd $HtpasswdImage -Bbn $User $Password } "No se pudo generar el fichero htpasswd"
+    return @($out | Where-Object { "$_" -match "^$([regex]::Escape($User)):" })[0]
+}
+
 function Write-Htpasswd {
     New-Item -ItemType Directory -Force -Path $AuthDir | Out-Null
-    $pw = Get-Cfg 'ADMIN_PASSWORD'
-    $out = Invoke-Native { docker run --rm --entrypoint htpasswd $HtpasswdImage -Bbn $AdminUser $pw } "No se pudo generar el fichero htpasswd"
-    $line = @($out | Where-Object { $_ -match '^admin:' })[0]
+    $content = (New-HtpasswdLine $AdminUser (Get-Cfg 'ADMIN_PASSWORD')) + "`n"
+    if (Get-Cfg 'CENIT_TOKEN') { $content += (New-HtpasswdLine $PlatformUser (Get-Cfg 'CENIT_TOKEN')) + "`n" }
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [IO.File]::WriteAllText((Join-Path $AuthDir 'htpasswd'), "$line`n", $utf8NoBom)
+    [IO.File]::WriteAllText((Join-Path $AuthDir 'htpasswd'), $content, $utf8NoBom)
+}
+
+# Tras crear/renovar el token de plataforma, darlo de alta en el registry.
+$script:TokenChanged = $false
+function Sync-PlatformToken {
+    if (-not (Get-Cfg 'CENIT_TOKEN')) { return }
+    $file = Join-Path $AuthDir 'htpasswd'
+    $hasUser = (Test-Path $file) -and (Select-String -Path $file -Pattern "^$([regex]::Escape($PlatformUser)):" -Quiet)
+    if ($script:TokenChanged -or -not $hasUser) {
+        Write-Htpasswd
+        Invoke-Compose restart registry traefik
+        Write-Ok "Token de plataforma dado de alta en el registry (usuario $PlatformUser)"
+    }
 }
 
 function Test-CenitTraefikRunning {
@@ -500,7 +553,7 @@ function Test-Dns([string]$Domain) {
     try { $publicIp = (Invoke-WebRequest -Uri 'https://api.ipify.org' -UseBasicParsing -TimeoutSec 5).Content.Trim() } catch { }
     Write-Info "IP publica de esta maquina: $(if ($publicIp) { $publicIp } else { 'desconocida' })"
     $bad = $false
-    foreach ($h in @($Domain, "cloud.$Domain", "registry.$Domain", "portainer.$Domain", "prueba-dns.$Domain")) {
+    foreach ($h in @("cloud.$Domain", "registry.$Domain", "portainer.$Domain", "prueba-dns.$Domain")) {
         $ip = ''
         try { $ip = (Resolve-DnsName -Name $h -Type A -DnsOnly -ErrorAction Stop | Where-Object { $_.Type -eq 'A' } | Select-Object -First 1).IPAddress } catch { }
         if (-not $ip) { Write-Warn "$h no resuelve a ninguna IP"; $bad = $true }
@@ -509,19 +562,21 @@ function Test-Dns([string]$Domain) {
     }
     if ($bad) {
         Write-Warn "Sin DNS correcto Let's Encrypt no podra emitir los certificados HTTPS."
-        Write-Warn "Crea dos registros A en tu proveedor DNS:  $Domain -> IP   y   *.$Domain -> IP"
+        Write-Warn "Crea un registro A comodin en tu proveedor DNS:  *.$Domain -> IP"
         if (-not (Read-YesNo "Continuar igualmente? (los certificados se emitiran solos cuando el DNS este bien)" $true)) { exit 1 }
     }
 }
 
 function Read-AdminPassword {
     if ($AssumeYes) { $script:Cfg['ADMIN_PASSWORD'] = New-Secret 20; $script:GeneratedPassword = $true; return }
-    Write-Host "  Contrasena: minimo 12 caracteres con mayuscula, minuscula, numero y simbolo"
-    Write-Host "  (sin espacios, comillas ni \). Dejala vacia para generar una segura."
+    Write-Host "  Contrasena: minimo 12 caracteres con mayuscula, minuscula, numero y simbolo,"
+    Write-Host "  sin palabras ni secuencias faciles de adivinar (password, 1234, admin, tu email...)"
+    Write-Host "  y sin espacios, comillas ni \. Dejala vacia para generar una segura."
     while ($true) {
         $p1 = Read-Secret "Contrasena"
         if ([string]::IsNullOrEmpty($p1)) { $script:Cfg['ADMIN_PASSWORD'] = New-Secret 20; $script:GeneratedPassword = $true; return }
-        if (-not (Test-AdminPassword $p1)) { Write-Host "  No cumple los requisitos."; continue }
+        $problem = Get-AdminPasswordProblem $p1
+        if ($problem) { Write-Host "  No es segura: $problem." -ForegroundColor Red; continue }
         $p2 = Read-Secret "Repite la contrasena"
         if ($p1 -ceq $p2) { $script:Cfg['ADMIN_PASSWORD'] = $p1; return }
         Write-Host "  No coinciden."
@@ -579,7 +634,12 @@ function Read-Configuration {
     }
 
     $currentPw = Get-Cfg 'ADMIN_PASSWORD'
-    if ($currentPw -and ($AssumeYes -or (Read-YesNo "Mantener la contrasena de administrador actual?" $true))) {
+    $weak = if ($currentPw) { Get-AdminPasswordProblem $currentPw } else { '' }
+    if ($weak) {
+        Write-Warn "La contrasena de administrador actual no es segura: $weak."
+        if ($AssumeYes) { Write-Warn "Cambiala reconfigurando sin --yes." }
+    }
+    if ($currentPw -and ($AssumeYes -or (-not $weak -and (Read-YesNo "Mantener la contrasena de administrador actual?" $true)))) {
         # se mantiene
     } else {
         if ($currentPw) { Write-Warn "Portainer y OpenObserve guardan su propia contrasena: cambiala tambien desde sus paneles." }
@@ -620,7 +680,7 @@ function Invoke-Portainer([string]$Method, [string]$Path, $Body = $null, [string
 }
 
 # Devuelve { Status, Json, Raw } sin lanzar excepción en errores HTTP (igual en PS 5.1 y 7).
-function Invoke-JsonApi([string]$Uri, [string]$Method, [hashtable]$Headers, $Body = $null, [string]$FormBody = '') {
+function Invoke-JsonApi([string]$Uri, [string]$Method, [hashtable]$Headers, $Body = $null, [string]$FormBody = '', [string]$RawBody = '', [string]$RawContentType = 'text/plain') {
     $params = @{
         Uri             = $Uri
         Method          = $Method
@@ -635,10 +695,17 @@ function Invoke-JsonApi([string]$Uri, [string]$Method, [hashtable]$Headers, $Bod
         $params.Body = $FormBody
         $params.ContentType = 'application/x-www-form-urlencoded'
     }
+    elseif ($RawBody) {
+        $params.Body = [Text.Encoding]::UTF8.GetBytes($RawBody)
+        $params.ContentType = $RawContentType
+    }
     $status = 0; $raw = ''
     try {
         $r = Invoke-WebRequest @params
-        $status = [int]$r.StatusCode; $raw = $r.Content
+        $status = [int]$r.StatusCode
+        # Windows PowerShell 5.1 decodifica como ISO-8859-1 las respuestas JSON sin charset: forzamos UTF-8
+        # (si no, los textos con acentos o comillas tipograficas, como el EULA de Nexus, llegan alterados).
+        $raw = [Text.Encoding]::UTF8.GetString($r.RawContentStream.ToArray())
     } catch {
         $resp = $_.Exception.Response
         if ($resp) { $status = [int]$resp.StatusCode }
@@ -752,65 +819,106 @@ function Set-PortainerConfiguration {
 }
 
 # ----------------------------------------------------------------------------
-# Forgejo (NuGet): admin, organizaciones publico/interno y token de publicación
+# Nexus Repository CE (NuGet): admin, EULA, feeds public/internal y usuario de automatizacion
 # ----------------------------------------------------------------------------
-function Invoke-ForgejoCli {
-    Push-Location $InfraDir
-    try {
-        $cliArgs = @('compose', 'exec', '-T', '-u', 'git', 'forgejo', 'forgejo') + $args
-        Invoke-Native { & docker @cliArgs 2>$null }
-    } finally { Pop-Location }
+$script:NxAuth = @{}
+$NexusEulaUrl = 'https://links.sonatype.com/products/nxrm/ce-eula'
+
+function Set-NexusCredentials([string]$User, [string]$Password) {
+    $basic = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${User}:$Password"))
+    $script:NxAuth = @{ Authorization = "Basic $basic" }
 }
 
-function Invoke-Forgejo([string]$Method, [string]$Path, [hashtable]$Headers, $Body = $null) {
-    return (Invoke-JsonApi "http://127.0.0.1:$(Get-Cfg 'NUGET_LOCAL_PORT')/api/v1$Path" $Method $Headers $Body)
+function Invoke-Nexus([string]$Method, [string]$Path, $Body = $null, [string]$Raw = '') {
+    return (Invoke-JsonApi "http://127.0.0.1:$(Get-Cfg 'NUGET_LOCAL_PORT')/service/rest/v1$Path" $Method $script:NxAuth $Body '' $Raw 'text/plain')
 }
 
-function Set-ForgejoConfiguration {
-    Write-Section "Configurando el repositorio NuGet (Forgejo)"
+function Set-NexusConfiguration {
+    Write-Section "Configurando el repositorio NuGet (Nexus)"
+    Write-Info "Esperando a que Nexus arranque (la primera vez tarda 1-3 minutos)..."
     $ready = $false
-    for ($i = 0; $i -lt 60; $i++) {
-        Invoke-ForgejoCli admin user list | Out-Null
-        if ($LASTEXITCODE -eq 0) { $ready = $true; break }
-        Start-Sleep -Seconds 2
+    for ($i = 0; $i -lt 120; $i++) {
+        $code = Invoke-Native { curl.exe -s -o NUL -w '%{http_code}' --max-time 5 "http://127.0.0.1:$(Get-Cfg 'NUGET_LOCAL_PORT')/service/rest/v1/status/writable" }
+        if ("$code".Trim() -eq '200') { $ready = $true; break }
+        Start-Sleep -Seconds 3
     }
-    if (-not $ready) { Stop-WithError "Forgejo no arranca. Mira: cd infra; docker compose logs forgejo" }
+    if (-not $ready) { Stop-WithError "Nexus no arranca. Mira: cd infra; docker compose logs nexus" }
 
-    $admins = Invoke-ForgejoCli admin user list --admin
-    $exists = @($admins | Select-Object -Skip 1 | Where-Object { ("$_" -split '\s+')[1] -eq $ForgejoAdmin }).Count -gt 0
-    if (-not $exists) {
-        Invoke-ForgejoCli admin user create --admin --username $ForgejoAdmin --password (Get-Cfg 'ADMIN_PASSWORD') --email (Get-Cfg 'ADMIN_EMAIL') --must-change-password=false | Out-Null
-        if ($LASTEXITCODE -ne 0) { Stop-WithError "No se pudo crear el usuario $ForgejoAdmin en Forgejo" }
-        Write-Ok "Usuario $ForgejoAdmin creado"
-    }
-
-    # Si el token guardado sigue valiendo, todo está ya configurado.
-    if ((Get-Cfg 'NUGET_TOKEN') -and (Invoke-Forgejo GET '/user' @{ Authorization = "token $(Get-Cfg 'NUGET_TOKEN')" }).Status -eq 200) {
-        Write-Ok "Token NuGet existente valido"
-        return
-    }
-
-    $basic = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${ForgejoAdmin}:$(Get-Cfg 'ADMIN_PASSWORD')"))
-    $auth = @{ Authorization = "Basic $basic" }
-    if ((Invoke-Forgejo GET '/user' $auth).Status -ne 200) {
-        Write-Warn "No se pudo entrar en Forgejo como $ForgejoAdmin (se cambio su contrasena?). Crea el token de publicacion desde su panel y ponlo en NUGET_TOKEN."
-        return
-    }
-
-    foreach ($org in @(@('publico', 'public'), @('interno', 'private'))) {
-        if ((Invoke-Forgejo GET "/orgs/$($org[0])" $auth).Status -ne 200) {
-            $r = Invoke-Forgejo POST '/orgs' $auth @{ username = $org[0]; visibility = $org[1] }
-            if ($r.Status -lt 200 -or $r.Status -ge 300) { Stop-WithError "No se pudo crear la organizacion $($org[0]) en Forgejo (HTTP $($r.Status)): $($r.Raw)" }
+    # Contrasena de admin: la misma que el resto. Nexus arranca con una aleatoria en /nexus-data/admin.password.
+    Set-NexusCredentials 'admin' (Get-Cfg 'ADMIN_PASSWORD')
+    if ((Invoke-Nexus GET '/security/anonymous').Status -ne 200) {
+        Push-Location $InfraDir
+        try { $init = (Invoke-Native { docker compose exec -T nexus cat /nexus-data/admin.password 2>$null }) -join '' } finally { Pop-Location }
+        $init = "$init".Trim()
+        if (-not $init) {
+            Write-Warn "No se pudo entrar en Nexus como admin (se cambio su contrasena?). Configuralo desde su panel."
+            return
         }
-        Write-Ok "Organizacion '$($org[0])' ($($org[1]))"
+        Set-NexusCredentials 'admin' $init
+        $r = Invoke-Nexus PUT '/security/users/admin/change-password' $null (Get-Cfg 'ADMIN_PASSWORD')
+        if ($r.Status -lt 200 -or $r.Status -ge 300) { Stop-WithError "No se pudo fijar la contrasena de admin de Nexus (HTTP $($r.Status)): $($r.Raw)" }
+        Set-NexusCredentials 'admin' (Get-Cfg 'ADMIN_PASSWORD')
+        Write-Ok "Contrasena de administrador de Nexus fijada"
     }
 
-    Invoke-Forgejo DELETE "/users/$ForgejoAdmin/tokens/cenit-nuget" $auth | Out-Null
-    $r = Invoke-Forgejo POST "/users/$ForgejoAdmin/tokens" $auth @{ name = 'cenit-nuget'; scopes = @('write:package', 'read:user', 'read:organization') }
-    if ($r.Status -lt 200 -or $r.Status -ge 300) { Stop-WithError "No se pudo crear el token NuGet en Forgejo (HTTP $($r.Status)): $($r.Raw)" }
-    $script:Cfg['NUGET_TOKEN'] = $r.Json.sha1
-    Export-EnvFile
-    Write-Ok "Token de publicacion NuGet generado (NUGET_TOKEN en infra\.env)"
+    # Sin aceptar el EULA de la edicion Community, Nexus no deja subir ni bajar paquetes.
+    $eula = Invoke-Nexus GET '/system/eula'
+    if ($eula.Json -and -not $eula.Json.accepted) {
+        Write-Host "  Nexus Repository Community Edition se rige por el EULA de Sonatype: $NexusEulaUrl"
+        Write-Host "  (edicion gratuita con limites: 40.000 componentes y 100.000 peticiones al dia)."
+        if (Read-YesNo "Aceptas ese EULA?" $true) {
+            $eula.Json.accepted = $true
+            $r = Invoke-Nexus POST '/system/eula' $eula.Json
+            if ($r.Status -lt 200 -or $r.Status -ge 300) { Stop-WithError "No se pudo aceptar el EULA de Nexus (HTTP $($r.Status)): $($r.Raw)" }
+            Write-Ok "EULA de Nexus Community Edition aceptado"
+        } else {
+            Write-Warn "Sin aceptar el EULA, Nexus no permitira subir ni descargar paquetes hasta que lo aceptes desde su panel."
+        }
+    }
+
+    # Feeds: internal (lectura y escritura con login) y public (lectura anonima, escritura con login).
+    foreach ($repo in 'internal', 'public') {
+        if ((Invoke-Nexus GET "/repositories/$repo").Status -ne 200) {
+            $r = Invoke-Nexus POST '/repositories/nuget/hosted' @{
+                name = $repo; online = $true
+                storage = @{ blobStoreName = 'default'; strictContentTypeValidation = $true; writePolicy = 'allow' }
+            }
+            if ($r.Status -lt 200 -or $r.Status -ge 300) { Stop-WithError "No se pudo crear el feed '$repo' en Nexus (HTTP $($r.Status)): $($r.Raw)" }
+        }
+        Write-Ok "Feed NuGet '$repo'"
+    }
+
+    # Acceso anonimo limitado a LEER el feed public. Solo la primera vez (marca: existe el rol public-read).
+    if ((Invoke-Nexus GET '/security/roles/public-read').Status -ne 200) {
+        $r = Invoke-Nexus POST '/security/roles' @{
+            id = 'public-read'; name = 'public-read'; description = 'Lectura anonima del feed public'
+            privileges = @('nx-repository-view-nuget-public-read', 'nx-repository-view-nuget-public-browse'); roles = @()
+        }
+        if ($r.Status -lt 200 -or $r.Status -ge 300) { Stop-WithError "No se pudo crear el rol public-read en Nexus (HTTP $($r.Status)): $($r.Raw)" }
+        Invoke-Nexus PUT '/security/users/anonymous' @{
+            userId = 'anonymous'; firstName = 'Anonymous'; lastName = 'User'; emailAddress = 'anonymous@example.org'
+            source = 'default'; status = 'active'; roles = @('public-read')
+        } | Out-Null
+        Invoke-Nexus PUT '/security/anonymous' @{ enabled = $true; userId = 'anonymous'; realmName = 'NexusAuthorizingRealm' } | Out-Null
+        # Repositorios de ejemplo (maven, nuget) que trae Nexus: no hacen falta.
+        foreach ($d in 'maven-releases', 'maven-snapshots', 'maven-central', 'maven-public', 'nuget-hosted', 'nuget.org-proxy', 'nuget-group') {
+            Invoke-Nexus DELETE "/repositories/$d" | Out-Null
+        }
+        Write-Ok "Acceso anonimo: solo lectura del feed public"
+    }
+
+    # Usuario de automatizacion: cenit-admin, con el token de plataforma como contrasena.
+    $found = Invoke-Nexus GET "/security/users?userId=$PlatformUser"
+    if (@($found.Json).Count -gt 0) {
+        Invoke-Nexus PUT "/security/users/$PlatformUser/change-password" $null (Get-Cfg 'CENIT_TOKEN') | Out-Null
+    } else {
+        $r = Invoke-Nexus POST '/security/users' @{
+            userId = $PlatformUser; firstName = 'cenit'; lastName = 'admin'; emailAddress = (Get-Cfg 'ADMIN_EMAIL')
+            password = (Get-Cfg 'CENIT_TOKEN'); status = 'active'; roles = @('nx-admin')
+        }
+        if ($r.Status -lt 200 -or $r.Status -ge 300) { Stop-WithError "No se pudo crear el usuario $PlatformUser en Nexus (HTTP $($r.Status)): $($r.Raw)" }
+    }
+    Write-Ok "Usuario $PlatformUser (token de plataforma) en Nexus"
 }
 
 # ----------------------------------------------------------------------------
@@ -821,7 +929,10 @@ function Start-Stack {
     # Si no hay conexión pero las imágenes ya están en local, seguimos con ellas.
     Push-Location $InfraDir
     try { Invoke-Native { docker compose pull --ignore-pull-failures } } finally { Pop-Location }
-    $appImage = "$(Get-Cfg 'APP_IMAGE'):$(Get-Cfg 'APP_VERSION')"
+    # Igual que docker compose: las variables de entorno mandan sobre el .env.
+    $img = if ($env:APP_IMAGE) { $env:APP_IMAGE } else { Get-Cfg 'APP_IMAGE' }
+    $ver = if ($env:APP_VERSION) { $env:APP_VERSION } else { Get-Cfg 'APP_VERSION' }
+    $appImage = "${img}:$ver"
     Invoke-Native { docker image inspect $appImage *> $null }
     if ($LASTEXITCODE -ne 0) { Stop-WithError "No se pudo descargar la imagen del portal ($appImage). Si es privada, ejecuta antes: docker login ghcr.io" }
     Write-Section "Arrancando servicios"
@@ -844,27 +955,69 @@ function Wait-App {
     Write-Warn "El portal todavia no responde. Revisa: cd infra; docker compose logs app"
 }
 
+# Tabla con bordes y una columna de color cada una. Cada fila es un array de 4
+# celdas; la fila '-' pinta un separador.
+function Write-Table([object[]]$Rows) {
+    $colors = @('White', 'Cyan', 'Green', 'Yellow')
+    $w = @(0, 0, 0, 0)
+    foreach ($r in $Rows) {
+        if ($r -is [string]) { continue }
+        for ($i = 0; $i -lt 4; $i++) { $w[$i] = [Math]::Max($w[$i], "$($r[$i])".Length) }
+    }
+    $line = {
+        param($left, $mid, $right)
+        $parts = for ($i = 0; $i -lt 4; $i++) { [string]::new([char]0x2500, $w[$i] + 2) }
+        Write-Host ("  $left" + ($parts -join $mid) + $right) -ForegroundColor DarkCyan
+    }
+    & $line ([char]0x250C) ([char]0x252C) ([char]0x2510)
+    $header = $true
+    foreach ($r in $Rows) {
+        if ($r -is [string]) { & $line ([char]0x251C) ([char]0x253C) ([char]0x2524); continue }
+        Write-Host "  $([char]0x2502)" -ForegroundColor DarkCyan -NoNewline
+        for ($i = 0; $i -lt 4; $i++) {
+            $color = if ($header) { 'White' } else { $colors[$i] }
+            Write-Host (" " + "$($r[$i])".PadRight($w[$i]) + " ") -ForegroundColor $color -NoNewline
+            Write-Host ([char]0x2502) -ForegroundColor DarkCyan -NoNewline
+        }
+        Write-Host ""
+        if ($header) { & $line ([char]0x255E) ([char]0x256A) ([char]0x2561); $header = $false }
+    }
+    & $line ([char]0x2514) ([char]0x2534) ([char]0x2518)
+}
+
 function Show-Summary {
     $s = Get-Cfg 'PUBLIC_SCHEME'; $d = Get-Cfg 'DOMAIN'; $p = Get-Cfg 'PUBLIC_PORT_SUFFIX'
+    $email = Get-Cfg 'ADMIN_EMAIL'; $pass = Get-Cfg 'ADMIN_PASSWORD'; $token = Get-Cfg 'CENIT_TOKEN'
+    $reg = Get-Cfg 'REGISTRY_HOST'; $nu = Get-Cfg 'NUGET_PUBLIC_URL'
     Write-Section "Todo listo"
-    Write-Host "  Portal ahora-cenit : ${s}://cloud.$d$p        (usuario: $(Get-Cfg 'ADMIN_EMAIL'))"
-    Write-Host "  Portainer          : ${s}://portainer.$d$p    (usuario: $AdminUser)"
-    Write-Host "  Traefik            : ${s}://traefik.$d$p      (usuario: $AdminUser)"
-    Write-Host "  OpenObserve        : ${s}://telemetry.$d$p    (usuario: $(Get-Cfg 'ADMIN_EMAIL'))"
-    Write-Host "  Docker Registry    : $(Get-Cfg 'REGISTRY_HOST')  (docker login $(Get-Cfg 'REGISTRY_HOST') -u $AdminUser)"
-    $nu = Get-Cfg 'NUGET_PUBLIC_URL'
-    Write-Host "  Repositorio NuGet  : $nu  (usuario: $ForgejoAdmin)"
-    Write-Host "     feed publico    : ${nu}api/packages/publico/nuget/index.json  (sin login)"
-    Write-Host "     feed interno    : ${nu}api/packages/interno/nuget/index.json  (con token)"
-    Write-Host "     publicar        : dotnet nuget push <paquete>.nupkg -s <feed> -k <NUGET_TOKEN de infra\.env>"
-    Write-Host "  Apps desplegadas   : ${s}://<nombre>.$d$p"
+    Write-Host ""
+    Write-Table @(
+        , @('Servicio', 'URL', 'Usuario', 'Clave')
+        , @('Portal ahora-cenit', "${s}://cloud.$d$p", $email, $pass); '-'
+        , @('Portainer', "${s}://portainer.$d$p", $AdminUser, $pass); '-'
+        , @('Traefik', "${s}://traefik.$d$p", $AdminUser, $pass); '-'
+        , @('OpenObserve', "${s}://telemetry.$d$p", $email, $pass); '-'
+        , @('Registry Docker', $reg, $AdminUser, $pass)
+        , @('', '', $PlatformUser, $token); '-'
+        , @('Repositorio NuGet', $nu, $AdminUser, $pass)
+        , @('', '', $PlatformUser, $token); '-'
+        , @('API del portal', "${s}://cloud.$d$p/api", 'Bearer / X-Api-Key', $token); '-'
+        , @('SQL Server', 'sqlserver:1433 (red interna)', 'sa', (Get-Cfg 'DB_SA_PASSWORD')); '-'
+        , @('Apps desplegadas', "${s}://<nombre>.$d$p", '', '')
+    )
+    Write-Host ""
+    Write-Host "  Feeds NuGet" -ForegroundColor White
+    Write-Host "     public   : ${nu}repository/public/index.json    (leer: sin login; escribir: con login)"
+    Write-Host "     internal : ${nu}repository/internal/index.json  (leer y escribir: con login)"
+    Write-Host ""
+    Write-Host "  Token de plataforma (CENIT_TOKEN, usuario $PlatformUser)" -ForegroundColor White
+    Write-Host "     API    : curl -H `"Authorization: Bearer $token`" ${s}://cloud.$d$p/api/products"
+    Write-Host "     Docker : docker login $reg -u $PlatformUser -p $token"
     Write-Host ""
     if ($script:GeneratedPassword) {
-        Write-Host "  Contrasena de administrador generada: $(Get-Cfg 'ADMIN_PASSWORD')" -ForegroundColor Yellow
-        Write-Host "  Apuntala. Tambien esta guardada en infra\.env (ADMIN_PASSWORD)."
-    } else {
-        Write-Host "  Contrasena: la que has indicado (guardada en infra\.env)."
+        Write-Host "  La contrasena de administrador se ha generado automaticamente: apuntala." -ForegroundColor Yellow
     }
+    Write-Host "  Todas las credenciales estan guardadas en infra\.env."
     if ((Get-Cfg 'CENIT_MODE') -eq 'production') {
         Write-Host "  Los certificados HTTPS se emiten solos en el primer acceso a cada subdominio."
         Write-Warn "Docker Desktop solo funciona con la sesion de Windows iniciada. Para un servidor 24x7 usa Linux o Windows Server."
@@ -909,7 +1062,8 @@ function Invoke-Install {
     Confirm-Network
     Start-Stack
     Set-PortainerConfiguration
-    Set-ForgejoConfiguration
+    Set-NexusConfiguration
+    Sync-PlatformToken
     Invoke-Compose up -d --remove-orphans   # recrea el portal con la API key de Portainer
     Wait-App
     Show-Summary
@@ -925,6 +1079,7 @@ function Invoke-Update {
             $next = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '--update', '--skip-git-pull')
             if ($AssumeYes) { $next += '--yes' }
             if ($NoBackup) { $next += '--no-backup' }
+            if ($HttpPortArg) { $next += '--http-port'; $next += $HttpPortArg }
             & (Get-HostExe) @next
             exit $LASTEXITCODE
         }
@@ -941,7 +1096,8 @@ function Invoke-Update {
     Confirm-Network
     Start-Stack
     Set-PortainerConfiguration
-    Set-ForgejoConfiguration
+    Set-NexusConfiguration
+    Sync-PlatformToken
     Invoke-Compose up -d --remove-orphans
     Write-Info "Limpiando imagenes antiguas..."
     Invoke-Native { docker image prune -f | Out-Null }

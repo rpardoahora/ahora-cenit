@@ -12,6 +12,13 @@ public class AuthOptions
     public bool RequireEmailConfirmation { get; set; }
 
     /// <summary>
+    /// Valor INICIAL de "permitir que cualquiera se registre desde el portal".
+    /// Un administrador lo puede cambiar después desde el panel (Ajustes); ese
+    /// valor, guardado en la base de datos, pasa a mandar sobre este.
+    /// </summary>
+    public bool RegistrationEnabled { get; set; } = true;
+
+    /// <summary>
     /// Minutos de validez de los tokens de confirmación de email / reseteo de contraseña.
     /// </summary>
     public int EmailConfirmationTokenExpiresMinutes { get; set; } = 1440;
