@@ -44,6 +44,8 @@ public static class UsersEndpoints
         ClaimsPrincipal principal,
         AppDbContext db,
         IAuditLogger auditLogger,
+        ISharedSqlProvisioner sharedSql,
+        ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
@@ -94,6 +96,7 @@ public static class UsersEndpoints
 
         db.Users.Add(user);
         await db.SaveChangesAsync(ct);
+        await SharedSqlLogins.TryCreateAsync(user, db, sharedSql, loggerFactory, ct);
         sw.Stop();
 
         await auditLogger.RecordAsync(
@@ -202,6 +205,8 @@ public static class UsersEndpoints
         ClaimsPrincipal principal,
         AppDbContext db,
         IAuditLogger auditLogger,
+        ISharedSqlProvisioner sharedSql,
+        ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
@@ -236,6 +241,19 @@ public static class UsersEndpoints
         }
 
         var deletedSnapshot = new { user.Email, user.Name, Role = user.Role.ToString(), user.ClientSlug };
+
+        if (!string.IsNullOrEmpty(user.SqlLogin))
+        {
+            try
+            {
+                await sharedSql.DropClientLoginAsync(user.SqlLogin, ct);
+            }
+            catch (Exception ex)
+            {
+                loggerFactory.CreateLogger("AhoraCenit.Users").LogWarning(ex,
+                    "No se pudo borrar el login SQL {Login} del cliente {ClientSlug}", user.SqlLogin, user.ClientSlug);
+            }
+        }
 
         db.Users.Remove(user);
         await db.SaveChangesAsync(ct);

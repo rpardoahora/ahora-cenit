@@ -30,6 +30,8 @@ public static class AuthEndpoints
         IEmailSender emailSender,
         IOptions<AuthOptions> authOptions,
         IPortalSettings portalSettings,
+        ISharedSqlProvisioner sharedSql,
+        ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
         if (!await portalSettings.IsRegistrationEnabledAsync(ct))
@@ -85,6 +87,7 @@ public static class AuthEndpoints
 
         db.Users.Add(user);
         await db.SaveChangesAsync(ct);
+        await SharedSqlLogins.TryCreateAsync(user, db, sharedSql, loggerFactory, ct);
 
         if (requiresConfirmation)
         {

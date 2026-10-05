@@ -6,6 +6,7 @@ using AhoraCenit.Api.Data;
 using AhoraCenit.Api.Features.Products;
 using AhoraCenit.Api.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace AhoraCenit.Api.Features.Applications;
 
@@ -39,6 +40,9 @@ public static class ApplicationsEndpoints
         IPortainerClient portainerClient,
         IConfiguration configuration,
         IAuditLogger auditLogger,
+        ISharedSqlProvisioner sharedSql,
+        IOptions<AppsSqlOptions> appsSqlOptions,
+        ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
@@ -132,17 +136,59 @@ public static class ApplicationsEndpoints
             ["BASE_DOMAIN"] = baseDomain
         };
 
+        // Motor SQL común: se desactivan los SQL Server del compose y sus cadenas de
+        // conexión pasan a usar el de la plataforma con el login del cliente.
+        var composeContent = product.ComposeTemplate;
+        SharedSqlRewriteResult? sqlRewrite = null;
+        string? sqlError = null;
+        if (sharedSql.Enabled)
+        {
+            var sqlOptions = appsSqlOptions.Value;
+            sqlRewrite = SharedSqlComposeRewriter.Rewrite(
+                composeContent,
+                SharedSqlComposeRewriter.DatabasePrefix(subdomain),
+                userValue: "${" + SharedSqlUserVariable + "}",
+                passwordValue: "${" + SharedSqlPasswordVariable + "}",
+                sqlOptions.Host,
+                sqlOptions.Network);
+
+            if (sqlRewrite.Changed)
+            {
+                try
+                {
+                    await sharedSql.EnsureClientLoginAsync(user, CancellationToken.None);
+                    await db.SaveChangesAsync(CancellationToken.None);
+                    portainerEnvVars[SharedSqlUserVariable] = user.SqlLogin!;
+                    portainerEnvVars[SharedSqlPasswordVariable] = user.SqlPassword!;
+                    composeContent = sqlRewrite.Compose;
+                }
+                catch (Exception ex)
+                {
+                    sqlError = $"No se pudo preparar el login SQL del cliente en el SQL Server común: {ex.Message}";
+                }
+
+                if (sqlRewrite.Warnings.Count > 0)
+                {
+                    loggerFactory.CreateLogger("AhoraCenit.Applications").LogWarning(
+                        "Compose de {Product} para {Subdomain}: referencias al SQL no adaptadas al motor común: {Warnings}",
+                        product.Name, subdomain, string.Join(" | ", sqlRewrite.Warnings));
+                }
+            }
+        }
+
         // A partir de aquí usamos CancellationToken.None a propósito: el despliegue en
         // Portainer (pull de imagen incluido) puede tardar más que la conexión HTTP del
         // cliente. Si se cancela con el ct de la petición, el stack se crea igualmente en
         // Portainer pero la aplicación queda huérfana en BBDD como "Deploying" para siempre.
-        var result = await portainerClient.CreateStackAsync(
-            stackName: subdomain,
-            composeContent: product.ComposeTemplate,
-            envVars: portainerEnvVars,
-            ct: CancellationToken.None);
+        var result = sqlError is not null
+            ? new PortainerCreateStackResult(false, null, application.PortainerEndpointId, sqlError)
+            : await portainerClient.CreateStackAsync(
+                stackName: subdomain,
+                composeContent: composeContent,
+                envVars: portainerEnvVars,
+                ct: CancellationToken.None);
 
-        if (!result.Success)
+        if (!result.Success && sqlError is null)
         {
             // Nuestra llamada HTTP a Portainer puede hacer timeout (p.ej. una imagen grande
             // tardando en descargarse) aunque el "docker compose up" siga corriendo ahí y
@@ -160,7 +206,10 @@ public static class ApplicationsEndpoints
             product.Id,
             product.Name,
             application.Subdomain,
-            EnvVars = RedactEnvVars(mergedEnvVars, schema)
+            EnvVars = RedactEnvVars(mergedEnvVars, schema),
+            SharedSql = sqlRewrite is { Changed: true }
+                ? new { sqlRewrite.DisabledServices, sqlRewrite.RewrittenServices, sqlRewrite.Databases, sqlRewrite.Warnings }
+                : null
         };
 
         if (result.Success)
@@ -494,11 +543,13 @@ public static class ApplicationsEndpoints
         AppDbContext db,
         IPortainerClient portainerClient,
         IAuditLogger auditLogger,
+        ISharedSqlProvisioner sharedSql,
+        ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
 
-        var application = await db.Applications.FirstOrDefaultAsync(a => a.Id == id, ct);
+        var application = await db.Applications.Include(a => a.User).FirstOrDefaultAsync(a => a.Id == id, ct);
         if (application is null)
         {
             return Results.NotFound();
@@ -520,6 +571,22 @@ public static class ApplicationsEndpoints
                     sw.Elapsed, success: false, errorMessage: result.ErrorMessage);
 
                 return Results.Json(new { message = "No se pudo borrar el stack en Portainer.", error = result.ErrorMessage }, statusCode: StatusCodes.Status502BadGateway);
+            }
+        }
+
+        // Sus bases en el SQL común (si las tiene). Se intenta aunque el modo actual sea
+        // Dedicated: la instancia pudo desplegarse cuando el modo era Shared.
+        if (!string.IsNullOrEmpty(application.User?.SqlLogin))
+        {
+            try
+            {
+                await sharedSql.DropApplicationDatabasesAsync(
+                    application.User.SqlLogin, SharedSqlComposeRewriter.DatabasePrefix(application.Subdomain), CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                loggerFactory.CreateLogger("AhoraCenit.Applications").LogWarning(ex,
+                    "No se pudieron borrar las bases de {Subdomain} en el SQL Server común", application.Subdomain);
             }
         }
 
@@ -556,6 +623,10 @@ public static class ApplicationsEndpoints
                 new { message = "La aplicación todavía se está desplegando. Inténtalo de nuevo en unos segundos.", error = result.ErrorMessage },
                 statusCode: StatusCodes.Status409Conflict)
             : Results.Json(new { message, error = result.ErrorMessage }, statusCode: StatusCodes.Status502BadGateway);
+
+    /// <summary>Variables que el portal pasa a Portainer con el login SQL del cliente (modo motor común).</summary>
+    private const string SharedSqlUserVariable = "CENIT_SQL_USER";
+    private const string SharedSqlPasswordVariable = "CENIT_SQL_PASSWORD";
 
     private static string GetBaseDomain(IConfiguration configuration) =>
         configuration["BaseDomain"] ?? "ahoracenit.localhost";

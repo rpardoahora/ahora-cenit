@@ -28,6 +28,14 @@ public class User
 
     public DateTime? PasswordResetTokenExpiresAt { get; set; }
 
+    /// <summary>
+    /// Login del cliente en el SQL Server común (modo AppsSql:Mode = Shared). Lo
+    /// comparten todas sus instancias; null si nunca se ha necesitado.
+    /// </summary>
+    public string? SqlLogin { get; set; }
+
+    public string? SqlPassword { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public ICollection<Application> Applications { get; set; } = new List<Application>();

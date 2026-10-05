@@ -461,6 +461,24 @@ editarlo y aplicar los cambios con `--update`. Ejemplos:
   **Administración → Ajustes** («Registro de usuarios»; efecto inmediato, sin
   reiniciar). `REGISTRATION_ENABLED` en `infra/.env` es solo el valor inicial:
   en cuanto se cambia desde el portal, manda el del portal.
+- **SQL Server de las aplicaciones** (`APPS_SQL_MODE`): el instalador
+  pregunta si cada aplicación usa **su propio SQL Server** (`dedicated`, la
+  imagen SQL que traiga su compose) o un **motor común** (`shared`, el SQL
+  Server de la plataforma). En modo común, al desplegar el portal:
+  - comenta en el compose los servicios SQL Server, sus volúmenes y las
+    dependencias (`depends_on`) hacia ellos;
+  - reescribe las cadenas de conexión que los usaban para que apunten a
+    `cenit-sqlserver`, con bases propias de la instancia
+    (`<subdominio>_<base original>`, p. ej. `acme_erp_flxCatalog_IC`);
+  - usa el **login SQL del cliente**: se crea al dar de alta el cliente y lo
+    comparten todas sus instancias. Puede crear bases (las que crea son suyas)
+    pero no ve ni puede tocar las de otros clientes ni la de la plataforma.
+
+  La aplicación tiene que crear sus bases al arrancar (Flexygo lo hace con su
+  dacpac). Al borrar una instancia se borran sus bases; al borrar el cliente,
+  su login. El modo solo afecta a los despliegues nuevos. Con la edición
+  Express todas las aplicaciones comparten sus límites (~1,4 GB de caché,
+  4 núcleos, 10 GB por base): para muchas aplicaciones, usa Standard.
 - **Edición de SQL Server**: `MSSQL_PID='Express'` por defecto (gratuita y
   apta para producción, hasta 10 GB por base de datos). Si tienes licencia
   de SQL Server pon `Standard`, `Enterprise` o tu clave de producto. No uses

@@ -26,6 +26,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(u => u.Name).HasMaxLength(200).IsRequired();
             entity.Property(u => u.ClientSlug).HasMaxLength(200).IsRequired();
             entity.Property(u => u.Role).HasConversion<string>().HasMaxLength(32);
+            entity.Property(u => u.SqlLogin).HasMaxLength(128);
+            entity.Property(u => u.SqlPassword).HasMaxLength(128);
         });
 
         modelBuilder.Entity<Product>(entity =>

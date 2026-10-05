@@ -34,7 +34,7 @@ LEGACY_CONTAINERS=(traefik portainer app sqlserver openobserve)
 
 # Orden y comentarios con los que se escribe infra/.env.
 ENV_KEYS=(CENIT_MODE DOMAIN PUBLIC_SCHEME HTTP_PORT PUBLIC_PORT_SUFFIX COMPOSE_FILE COMPOSE_PATH_SEPARATOR ACME_EMAIL
-  ADMIN_EMAIL ADMIN_PASSWORD DB_SA_PASSWORD MSSQL_PID JWT_SECRET APP_IMAGE APP_VERSION
+  ADMIN_EMAIL ADMIN_PASSWORD DB_SA_PASSWORD MSSQL_PID APPS_SQL_MODE JWT_SECRET APP_IMAGE APP_VERSION
   PORTAINER_API_KEY PORTAINER_ENDPOINT_ID PORTAINER_LOCAL_PORT REGISTRY_HOST REGISTRY_LOCAL_PORT
   NUGET_PUBLIC_URL NUGET_LOCAL_PORT CENIT_TOKEN
   REGISTRATION_ENABLED REQUIRE_EMAIL_CONFIRMATION SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASSWORD SMTP_FROM
@@ -264,6 +264,7 @@ apply_defaults() {
   : "${CFG[ACME_EMAIL]:=${CFG[ADMIN_EMAIL]:-}}"
   : "${CFG[DB_SA_PASSWORD]:=$(gen_secret 32)}"
   : "${CFG[MSSQL_PID]:=Express}"
+  : "${CFG[APPS_SQL_MODE]:=dedicated}"
   : "${CFG[JWT_SECRET]:=$(gen_secret 64)}"
   : "${CFG[APP_IMAGE]:=ghcr.io/rpardoahora/ahora-cenit}"
   : "${CFG[APP_VERSION]:=latest}"
@@ -298,6 +299,7 @@ write_env() {
         ADMIN_EMAIL)       echo; echo "# --- Administrador: portal, Portainer, Traefik, registry y OpenObserve ---" ;;
         DB_SA_PASSWORD)    echo; echo "# --- Secretos internos (generados automáticamente) ---" ;;
         MSSQL_PID)         echo "# Edición de SQL Server: Express (gratis, apta para producción), Developer (solo pruebas) o Standard/Enterprise/clave con licencia." ;;
+        APPS_SQL_MODE)     echo "# SQL Server de las aplicaciones: dedicated (cada una con su imagen SQL) o shared (todas en el de la plataforma, un login por cliente). Solo afecta a los despliegues nuevos." ;;
         APP_IMAGE)         echo; echo "# --- Imagen del portal (APP_VERSION: latest o sha-<commit> / v<versión>) ---" ;;
         PORTAINER_API_KEY) echo; echo "# --- Portainer / registry (rellenado por el instalador) ---" ;;
         NUGET_PUBLIC_URL)  echo; echo "# --- NuGet (Nexus) y token de plataforma. CENIT_TOKEN es la contraseña del usuario $PLATFORM_USER: vale para la API del portal, docker login y NuGet ---" ;;
@@ -588,6 +590,24 @@ collect_config() {
 
   if [ "${CFG[CENIT_MODE]}" = "production" ]; then
     CFG[ACME_EMAIL]="$(ask "Email para avisos de Let's Encrypt" "${CFG[ACME_EMAIL]:-${CFG[ADMIN_EMAIL]}}")"
+  fi
+
+  echo
+  info "SQL Server de las aplicaciones que se desplieguen:"
+  local sql_default=1; [ "$(cfg APPS_SQL_MODE)" = "shared" ] && sql_default=2
+  local sql_choice; sql_choice="$(ask_choice "¿Un SQL Server por aplicación o un motor común?" "$sql_default" \
+    "Uno por aplicación: cada app usa la imagen SQL que traiga su compose" \
+    "Motor común: todas usan el SQL Server de la plataforma, con un login por cliente")"
+  if [ "$sql_choice" = "2" ]; then
+    CFG[APPS_SQL_MODE]=shared
+    info "Se desactivarán las imágenes SQL de los compose y sus cadenas de conexión apuntarán al SQL común."
+    info "Las aplicaciones tienen que crear sus bases al arrancar (p. ej. Flexygo despliega su dacpac)."
+    if [ "$(cfg MSSQL_PID)" = "Express" ]; then
+      warn "El SQL de la plataforma es Express: todas las aplicaciones compartirán sus límites"
+      warn "(~1,4 GB de caché, 4 núcleos, 10 GB por base). Para muchas apps usa Standard (MSSQL_PID en infra/.env)."
+    fi
+  else
+    CFG[APPS_SQL_MODE]=dedicated
   fi
 
   echo
@@ -946,6 +966,11 @@ EOF
   if [ "$GENERATED_PASSWORD" -eq 1 ]; then
     printf '  %sLa contraseña de administrador se ha generado automáticamente: apúntala.%s
 ' "$C_BOLD$C_YELLOW" "$C_RESET"
+  fi
+  if [ "$(cfg APPS_SQL_MODE)" = "shared" ]; then
+    echo "  SQL Server de las aplicaciones: motor común (el de la plataforma, un login por cliente)."
+  else
+    echo "  SQL Server de las aplicaciones: uno por aplicación (la imagen SQL de cada compose)."
   fi
   if [ "$(cfg REGISTRATION_ENABLED)" = "true" ]; then
     printf '  %sRegistro de usuarios externos (valor inicial): HABILITADO%s (cualquiera puede crearse una cuenta y desplegar)\n' "$C_BOLD$C_YELLOW" "$C_RESET"

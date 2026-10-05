@@ -26,6 +26,7 @@ builder.Services.Configure<AdminSeedOptions>(builder.Configuration.GetSection(Ad
 builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection(AuthOptions.SectionName));
 builder.Services.Configure<SmtpOptions>(builder.Configuration.GetSection(SmtpOptions.SectionName));
 builder.Services.Configure<AdminToolsOptions>(builder.Configuration.GetSection(AdminToolsOptions.SectionName));
+builder.Services.Configure<AppsSqlOptions>(builder.Configuration.GetSection(AppsSqlOptions.SectionName));
 
 // --- Database ---
 builder.Services.AddDbContext<AppDbContext>(options =>
@@ -34,6 +35,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 // --- Services ---
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped<IPortalSettings, PortalSettings>();
+builder.Services.AddScoped<ISharedSqlProvisioner, SharedSqlProvisioner>();
 builder.Services.AddSingleton<IAuditLogger, AuditLogger>();
 builder.Services.AddHttpClient<IPortainerClient, PortainerClient>(client =>
 {

@@ -45,7 +45,7 @@ $WslRepoPath  = '/opt/ahora-cenit'
 $BootTaskName = 'AhoraCenit-WSL'
 
 $EnvKeys = @('CENIT_MODE', 'DOMAIN', 'PUBLIC_SCHEME', 'HTTP_PORT', 'PUBLIC_PORT_SUFFIX', 'COMPOSE_FILE', 'COMPOSE_PATH_SEPARATOR', 'ACME_EMAIL',
-    'ADMIN_EMAIL', 'ADMIN_PASSWORD', 'DB_SA_PASSWORD', 'MSSQL_PID', 'JWT_SECRET', 'APP_IMAGE', 'APP_VERSION',
+    'ADMIN_EMAIL', 'ADMIN_PASSWORD', 'DB_SA_PASSWORD', 'MSSQL_PID', 'APPS_SQL_MODE', 'JWT_SECRET', 'APP_IMAGE', 'APP_VERSION',
     'PORTAINER_API_KEY', 'PORTAINER_ENDPOINT_ID', 'PORTAINER_LOCAL_PORT', 'REGISTRY_HOST', 'REGISTRY_LOCAL_PORT',
     'NUGET_PUBLIC_URL', 'NUGET_LOCAL_PORT', 'CENIT_TOKEN',
     'REGISTRATION_ENABLED', 'REQUIRE_EMAIL_CONFIRMATION', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASSWORD', 'SMTP_FROM',
@@ -284,6 +284,7 @@ function Set-Defaults {
     Set-CfgDefault 'ACME_EMAIL' (Get-Cfg 'ADMIN_EMAIL')
     Set-CfgDefault 'DB_SA_PASSWORD' (New-Secret 32)
     Set-CfgDefault 'MSSQL_PID' 'Express'
+    Set-CfgDefault 'APPS_SQL_MODE' 'dedicated'
     Set-CfgDefault 'JWT_SECRET' (New-Secret 64)
     Set-CfgDefault 'APP_IMAGE' 'ghcr.io/rpardoahora/ahora-cenit'
     Set-CfgDefault 'APP_VERSION' 'latest'
@@ -304,6 +305,7 @@ function Export-EnvFile {
         'ADMIN_EMAIL'                 = @('', '# --- Administrador: portal, Portainer, Traefik, registry y OpenObserve ---')
         'DB_SA_PASSWORD'              = @('', '# --- Secretos internos (generados automaticamente) ---')
         'MSSQL_PID'                   = @('# Edicion de SQL Server: Express (gratis, apta para produccion), Developer (solo pruebas) o Standard/Enterprise/clave con licencia.')
+        'APPS_SQL_MODE'               = @('# SQL Server de las aplicaciones: dedicated (cada una con su imagen SQL) o shared (todas en el de la plataforma, un login por cliente). Solo afecta a los despliegues nuevos.')
         'APP_IMAGE'                   = @('', '# --- Imagen del portal (APP_VERSION: latest o sha-<commit> / v<version>) ---')
         'PORTAINER_API_KEY'           = @('', '# --- Portainer / registry (rellenado por el instalador) ---')
         'NUGET_PUBLIC_URL'            = @('', "# --- NuGet (Nexus) y token de plataforma. CENIT_TOKEN es la contrasena del usuario ${PlatformUser}: vale para la API del portal, docker login y NuGet ---")
@@ -652,6 +654,22 @@ function Read-Configuration {
         $acme = Get-Cfg 'ACME_EMAIL'; if (-not $acme) { $acme = Get-Cfg 'ADMIN_EMAIL' }
         $script:Cfg['ACME_EMAIL'] = Read-Value "Email para avisos de Let's Encrypt" $acme
     }
+
+    Write-Host ""
+    Write-Info "SQL Server de las aplicaciones que se desplieguen:"
+    $sqlDefault = if ((Get-Cfg 'APPS_SQL_MODE') -eq 'shared') { 2 } else { 1 }
+    $sqlChoice = Read-Choice "Un SQL Server por aplicacion o un motor comun?" @(
+        'Uno por aplicacion: cada app usa la imagen SQL que traiga su compose',
+        'Motor comun: todas usan el SQL Server de la plataforma, con un login por cliente') $sqlDefault
+    if ($sqlChoice -eq 2) {
+        $script:Cfg['APPS_SQL_MODE'] = 'shared'
+        Write-Info "Se desactivaran las imagenes SQL de los compose y sus cadenas de conexion apuntaran al SQL comun."
+        Write-Info "Las aplicaciones tienen que crear sus bases al arrancar (p. ej. Flexygo despliega su dacpac)."
+        if ((Get-Cfg 'MSSQL_PID') -eq 'Express') {
+            Write-Warn "El SQL de la plataforma es Express: todas las aplicaciones compartiran sus limites"
+            Write-Warn "(~1,4 GB de cache, 4 nucleos, 10 GB por base). Para muchas apps usa Standard (MSSQL_PID en infra\.env)."
+        }
+    } else { $script:Cfg['APPS_SQL_MODE'] = 'dedicated' }
 
     Write-Host ""
     Write-Warn "Si habilitas el registro de usuarios externos, cualquier persona podra crearse una cuenta"
@@ -1026,6 +1044,11 @@ function Show-Summary {
     Write-Host ""
     if ($script:GeneratedPassword) {
         Write-Host "  La contrasena de administrador se ha generado automaticamente: apuntala." -ForegroundColor Yellow
+    }
+    if ((Get-Cfg 'APPS_SQL_MODE') -eq 'shared') {
+        Write-Host "  SQL Server de las aplicaciones: motor comun (el de la plataforma, un login por cliente)."
+    } else {
+        Write-Host "  SQL Server de las aplicaciones: uno por aplicacion (la imagen SQL de cada compose)."
     }
     if ((Get-Cfg 'REGISTRATION_ENABLED') -eq 'true') {
         Write-Host "  Registro de usuarios externos (valor inicial): HABILITADO (cualquiera puede crearse una cuenta y desplegar)" -ForegroundColor Yellow
