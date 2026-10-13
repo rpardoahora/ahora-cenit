@@ -17,6 +17,8 @@ interface ConfirmDialogProps {
   confirmLabel?: string
   destructive?: boolean
   onConfirm: () => void | Promise<void>
+  /** Contenido extra entre la descripción y los botones (p. ej. opciones). */
+  children?: ReactNode
 }
 
 export function ConfirmDialog({
@@ -26,6 +28,7 @@ export function ConfirmDialog({
   confirmLabel = "Confirmar",
   destructive,
   onConfirm,
+  children,
 }: ConfirmDialogProps) {
   const [open, setOpen] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -48,6 +51,7 @@ export function ConfirmDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
+        {children}
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>
             Cancelar

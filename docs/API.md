@@ -21,7 +21,7 @@ usuario administrador, y queda auditado como `via=api-token`).
 > 🔒 Trátalo como una contraseña de administrador. Si se filtra, bórralo:
 > quita la línea `CENIT_TOKEN` de `infra/.env` y ejecuta `--update`. El
 > instalador genera uno nuevo y lo actualiza en el portal, en el registry y en
-> Nexus (el usuario `cenit-admin`).
+> repositorio NuGet (usuario `cenit-admin` y API key).
 
 **URL base:** `https://cloud.<tu-dominio>/api` (en local:
 `http://cloud.localhost/api`, con `:<puerto>` si no es el 80).
@@ -200,6 +200,8 @@ propietarios de las aplicaciones y pueden entrar al portal a verlas.
 | `userId` | Cliente propietario. Si se omite, la aplicación es del administrador. |
 | `subdomain` | Opcional. Se normaliza (minúsculas, sin acentos ni espacios) y, si ya existe, se le añade un sufijo: **usa el `subdomain` de la respuesta**, no el que enviaste. Por defecto `<producto>-<cliente>`. |
 | `envVars` | Valores de las variables `Text` y `Secret`. Las que no envíes toman su `defaultValue`; las `ReadOnly` y `Hidden` ignoran lo que envíes. |
+| `sqlMode` | Solo administradores: `"Dedicated"` o `"Shared"` para esta instancia. Si se omite (y siempre para un cliente, que recibe `403` si lo envía) se usa el `appsSqlMode` de los ajustes. |
+| `adminPassword` | Contraseña inicial del administrador de la aplicación. **Obligatoria si el portal usa el motor SQL común** (`GET /api/config` → `sharedSql: true`) y el compose tiene un SQL Server: la aplicación se instala sola al arrancar (Flexygo: `Setup__AdminPassword`). En otro caso se ignora. |
 
 La llamada **espera a que el despliegue termine** (descarga de imágenes
 incluida; puede tardar minutos: usa un timeout amplio, p.ej. 15 min).
@@ -234,7 +236,8 @@ instalación (en local, p. ej. `http://mi-erp-acme.ahoracenit.localhost:8880`).
 | `GET /api/applications/{id}/status` | **Consulta el estado real** en Docker/Portainer, lo guarda y lo devuelve. |
 | `POST /api/applications/{id}/stop` | Para la aplicación (los datos se conservan). |
 | `POST /api/applications/{id}/start` | La vuelve a arrancar. |
-| `DELETE /api/applications/{id}` | La borra **con sus datos** (stack y volúmenes). `204`. |
+| `DELETE /api/applications/{id}` | La manda a la **papelera**: se para y se borra del todo (stack, volúmenes, bases del SQL común e imágenes que nadie más use) pasados `TRASH_RETENTION_DAYS` días (7). `204`. Un administrador puede borrarla del todo ya con `?purge=true`. |
+| `POST /api/applications/{id}/restore` | (Administrador) La saca de la papelera y la vuelve a arrancar. |
 
 `stop` y `start` esperan hasta 90 s si Portainer todavía está terminando el
 despliegue. Si pasado ese tiempo sigue ocupado responden `409` (se puede
@@ -250,8 +253,8 @@ contenedores ya no existen: se borraron fuera del portal).
 
 | Método y ruta | Qué hace |
 |---|---|
-| `GET /api/admin/settings` | Devuelve `{"registrationEnabled": true}`. |
-| `PUT /api/admin/settings` | `{"registrationEnabled": false}`: cierra el registro abierto. |
+| `GET /api/admin/settings` | Devuelve `{"registrationEnabled": true, "appsSqlMode": "Dedicated"}`. |
+| `PUT /api/admin/settings` | Cambia solo lo que envíes: `{"registrationEnabled": false}` cierra el registro abierto; `{"appsSqlMode": "Shared"}` hace que las nuevas aplicaciones usen la BBDD compartida (`"Dedicated"`: la suya propia). |
 
 Con `registrationEnabled: false`, `POST /api/auth/register` responde `403` y
 el portal oculta el botón «Registrarse»; solo un administrador puede crear

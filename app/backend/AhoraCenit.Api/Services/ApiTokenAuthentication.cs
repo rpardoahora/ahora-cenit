@@ -13,7 +13,7 @@ namespace AhoraCenit.Api.Services;
 /// <summary>
 /// Tokens de API para automatizaciones (CI, scripts, otros servicios). El
 /// instalador configura aquí el mismo token de plataforma que sirve para
-/// <c>docker login</c> en el registry y como contraseña del usuario de NuGet en Nexus.
+/// <c>docker login</c> en el registry y como API key para subir paquetes al repositorio NuGet.
 /// </summary>
 public class ApiAuthOptions
 {

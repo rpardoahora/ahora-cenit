@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import { toast } from "sonner"
-import { productsApi, applicationsApi, configApi, ApiError } from "@/lib/api"
-import type { Product } from "@/types"
+import { productsApi, applicationsApi, configApi, usersApi, ApiError } from "@/lib/api"
+import { useAuth } from "@/context/AuthContext"
+import { Switch } from "@/components/ui/switch"
+import type { AdminUser, Product } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -30,9 +32,25 @@ export function DeployPage() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [estimateSeconds, setEstimateSeconds] = useState(DEFAULT_ESTIMATE_SECONDS)
   const [baseDomain, setBaseDomain] = useState(window.location.hostname)
+  const { user } = useAuth()
+  const isAdmin = user?.role === "Admin"
+  // Modo SQL de esta instancia: el de los ajustes; solo un administrador puede cambiarlo aquí.
+  const [sharedSql, setSharedSql] = useState(false)
+  const [adminPassword, setAdminPassword] = useState("")
+  // Solo administradores: cliente al que se instala ("" = el propio administrador).
+  const [clients, setClients] = useState<AdminUser[]>([])
+  const [targetUserId, setTargetUserId] = useState("")
   const [progress, setProgress] = useState(0)
   const [isOvertime, setIsOvertime] = useState(false)
   const progressInterval = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => {
+    if (!isAdmin) return
+    usersApi
+      .list()
+      .then((users) => setClients(users.filter((u) => u.role === "Cliente")))
+      .catch(() => setClients([]))
+  }, [isAdmin])
 
   useEffect(() => {
     if (!productId) return
@@ -68,7 +86,10 @@ export function DeployPage() {
 
         try {
           const config = await configApi.get()
-          if (!cancelled) setBaseDomain(config.baseDomain)
+          if (!cancelled) {
+            setBaseDomain(config.baseDomain)
+            setSharedSql(config.sharedSql)
+          }
         } catch {
           // si falla, se mantiene window.location.hostname como aproximación
         }
@@ -120,6 +141,9 @@ export function DeployPage() {
         productId,
         subdomain,
         envVars,
+        adminPassword: sharedSql ? adminPassword : undefined,
+        sqlMode: isAdmin ? (sharedSql ? "Shared" : "Dedicated") : undefined,
+        userId: isAdmin && targetUserId ? targetUserId : undefined,
       })
       setProgress(100)
       toast.success("Despliegue iniciado.")
@@ -147,7 +171,11 @@ export function DeployPage() {
     return <p className="text-sm text-muted-foreground">Producto no encontrado.</p>
   }
 
-  const visibleEnvVars = product.envVarsSchema.filter((envVar) => envVar.mode !== "Hidden")
+  // Con BBDD compartida no se piden las variables del SQL del compose (p. ej. la contraseña de sa).
+  const hiddenBySharedSql = new Set(sharedSql ? (product.sharedSqlHiddenEnvVars ?? []) : [])
+  const visibleEnvVars = product.envVarsSchema.filter(
+    (envVar) => envVar.mode !== "Hidden" && !hiddenBySharedSql.has(envVar.key)
+  )
 
   return (
     <div className="mx-auto max-w-lg">
@@ -201,6 +229,64 @@ export function DeployPage() {
                       </div>
                     ))}
                   </div>
+                </Field>
+              )}
+
+              {isAdmin && (
+                <Field>
+                  <FieldLabel htmlFor="target-user">Cliente</FieldLabel>
+                  <select
+                    id="target-user"
+                    value={targetUserId}
+                    onChange={(e) => setTargetUserId(e.target.value)}
+                    className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:bg-input/30"
+                  >
+                    <option value="">Yo ({user?.name ?? "administrador"})</option>
+                    {clients.map((client) => (
+                      <option key={client.id} value={client.id}>
+                        {client.name} ({client.clientSlug})
+                      </option>
+                    ))}
+                  </select>
+                  <FieldDescription>
+                    La aplicación será de este cliente: la verá en su panel y, con BBDD compartida, usará su
+                    login SQL.
+                  </FieldDescription>
+                </Field>
+              )}
+
+              {isAdmin && (
+                <Field>
+                  <FieldLabel>Base de datos</FieldLabel>
+                  <label className="flex items-center gap-3 text-sm font-medium">
+                    <Switch checked={sharedSql} onCheckedChange={setSharedSql} />
+                    {sharedSql ? "BBDD compartida" : "BBDD independiente"}
+                  </label>
+                  <FieldDescription>
+                    {sharedSql
+                      ? "La aplicación usará el SQL Server de la plataforma, con el login de su cliente."
+                      : "La aplicación usará el SQL Server que trae su compose."}{" "}
+                    Por defecto, el modo de los ajustes del portal.
+                  </FieldDescription>
+                </Field>
+              )}
+
+              {sharedSql && (
+                <Field>
+                  <FieldLabel htmlFor="admin-password">
+                    Contraseña del administrador de la aplicación
+                  </FieldLabel>
+                  <Input
+                    id="admin-password"
+                    type="password"
+                    autoComplete="new-password"
+                    value={adminPassword}
+                    onChange={(e) => setAdminPassword(e.target.value)}
+                  />
+                  <FieldDescription>
+                    La aplicación se instala sola al arrancar y crea su usuario
+                    administrador con esta contraseña.
+                  </FieldDescription>
                 </Field>
               )}
 

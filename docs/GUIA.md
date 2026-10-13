@@ -16,7 +16,7 @@ configurado:
 | `registry.tudominio.com` | **Docker Registry** privado, para tus propias imágenes. |
 | `traefik.tudominio.com` | **Traefik**: el proxy que reparte el tráfico y pone los certificados HTTPS. |
 | `telemetry.tudominio.com` | **OpenObserve**: logs, métricas y auditoría del portal. |
-| `nuget.tudominio.com` | **Repositorio NuGet** (Nexus): feeds `public` (lectura sin login) e `internal` (todo con login). |
+| `nuget.tudominio.com` | **Repositorio NuGet** (BaGetter): un feed privado en `/v3/index.json` (leer con usuario y contraseña, subir con API key). |
 | `<nombre>.tudominio.com` | Cada aplicación desplegada desde el portal. |
 | `tudominio.com` | Redirige al portal. |
 
@@ -228,7 +228,7 @@ Usuarios de cada panel:
 | Traefik | `admin` | la de administrador |
 | Registry (`docker login`) | `admin` | la de administrador |
 | OpenObserve | tu email | la de administrador |
-| Repositorio NuGet (Nexus) | `admin` | la de administrador |
+| Repositorio NuGet (BaGetter) | `cenit-admin` (o `admin`) | `CENIT_TOKEN` (o la de administrador); subir: `CENIT_TOKEN` como API key |
 
 > 🔒 En producción, la primera vez que abras cada subdominio puede tardar
 > unos segundos en tener el candado HTTPS: Let's Encrypt emite el
@@ -285,63 +285,64 @@ docker push localhost:5000/mi-app:1.0
 Portainer ya tiene el registry configurado, así que los productos pueden
 usar esas imágenes directamente.
 
-## 11. Repositorio NuGet: feeds public e internal
+## 11. Repositorio NuGet privado (BaGetter)
 
-El instalador monta **Nexus Repository Community Edition** como repositorio
-NuGet y deja creados dos feeds, con estos permisos:
+El instalador monta **BaGetter** como repositorio NuGet, con **un único feed
+privado**:
 
-| Feed | Leer (descargar) | Escribir (publicar) | Dirección |
-|---|---|---|---|
-| `public` | **Cualquiera**, sin usuario ni contraseña | Solo con usuario y contraseña | `https://nuget.midominio.com/repository/public/index.json` |
-| `internal` | Solo con usuario y contraseña | Solo con usuario y contraseña | `https://nuget.midominio.com/repository/internal/index.json` |
-
-Es decir: **un paquete es público o interno según en qué feed lo publiques.**
-Desde fuera no se puede ni descargar ni ver el contenido de `internal`.
-
-En **modo local** la dirección base es `http://localhost:5100/` en lugar de
-`https://nuget.midominio.com/` (p. ej.
-`http://localhost:5100/repository/public/index.json`).
+| | Cómo |
+|---|---|
+| Dirección del feed | `https://nuget.midominio.com/v3/index.json` (en **modo local**, `http://localhost:5100/v3/index.json`) |
+| Leer (restaurar paquetes) | Usuario y contraseña. Sin credenciales responde 401. |
+| Subir y borrar | **API key** = `CENIT_TOKEN` (`-k` en `dotnet nuget push/delete`). |
+| Borrar | **Borrado definitivo** (*hard delete*): se elimina el paquete y su fichero, no se "oculta". |
+| Limpieza automática | Al subir una versión se borran las antiguas que sobren según la **política de retención**. |
+| Web (lista de paquetes) | `https://nuget.midominio.com`, con el login de administración (`admin` o `cenit-admin`). |
 
 ### Usuarios
 
 | Usuario | Contraseña | Para qué |
 |---|---|---|
-| `admin` | La contraseña de administrador (la misma que el resto) | Entrar al panel web de Nexus (`https://nuget.midominio.com`) y administrarlo. |
-| `cenit-admin` | `CENIT_TOKEN` de `infra/.env` | Automatizaciones (CI, scripts). Es el mismo token que sirve para `docker login` y para la [API](API.md). |
+| `cenit-admin` | `CENIT_TOKEN` | Leer el feed (CI, scripts, desarrolladores). |
+| `cenit-apps` | `NUGET_READ_TOKEN` | **Solo lectura**: lo reciben las aplicaciones desplegadas (instalación desatendida). |
+| `admin` | La contraseña de administrador | Leer el feed y entrar en la web. |
+
+Para subir no hay usuario: se usa la API key (`CENIT_TOKEN`).
 
 ### Publicar un paquete
 
-Registra el feed una vez con el usuario, y publica sin más (no hace falta `-k`):
-
 ```bash
-dotnet nuget add source https://nuget.midominio.com/repository/public/index.json -n cenit-public -u cenit-admin -p <CENIT_TOKEN> --store-password-in-clear-text
 dotnet pack -c Release
-dotnet nuget push bin/Release/MiLibreria.1.0.0.nupkg -s cenit-public
+dotnet nuget push bin/Release/MiLibreria.1.0.0.nupkg -s https://nuget.midominio.com/v3/index.json -k <CENIT_TOKEN>
 ```
 
-Para el feed interno es igual con `.../repository/internal/index.json` y otro nombre (p. ej. `cenit-internal`).
+Borrar una versión (definitivo):
+
+```bash
+dotnet nuget delete MiLibreria 1.0.0 -s https://nuget.midominio.com/v3/index.json -k <CENIT_TOKEN> --non-interactive
+```
+
+No se puede volver a subir una versión que ya existe (`AllowPackageOverwrites`
+desactivado): sube una versión nueva.
 
 ### Usar los paquetes en un proyecto
 
-Feed `public` (no necesita nada más):
-
 ```bash
-dotnet nuget add source https://nuget.midominio.com/repository/public/index.json -n cenit-public
+dotnet nuget add source https://nuget.midominio.com/v3/index.json -n cenit -u cenit-admin -p <CENIT_TOKEN> --store-password-in-clear-text
 ```
 
-Feed `internal` (con usuario y contraseña), en un `nuget.config` junto a la solución:
+O en un `nuget.config` junto a la solución:
 
 ```xml
 <configuration>
   <packageSources>
-    <add key="cenit-public" value="https://nuget.midominio.com/repository/public/index.json" />
-    <add key="cenit-internal" value="https://nuget.midominio.com/repository/internal/index.json" />
+    <add key="cenit" value="https://nuget.midominio.com/v3/index.json" />
   </packageSources>
   <packageSourceCredentials>
-    <cenit-internal>
-      <add key="Username" value="tu-usuario" />
-      <add key="ClearTextPassword" value="tu-contraseña-o-token" />
-    </cenit-internal>
+    <cenit>
+      <add key="Username" value="cenit-admin" />
+      <add key="ClearTextPassword" value="<CENIT_TOKEN>" />
+    </cenit>
   </packageSourceCredentials>
 </configuration>
 ```
@@ -350,40 +351,20 @@ Feed `internal` (con usuario y contraseña), en un `nuget.config` junto a la sol
 > añade `allowInsecureConnections="true"` a la línea `<add key=... />` del
 > feed, o `--allow-insecure-connections` en `dotnet nuget push`.
 
-### Dar acceso al feed internal a un compañero
+### Política de retención
 
-1. Entra en `https://nuget.midominio.com` como `admin`.
-2. *Administración* (la rueda) → *Security* → *Roles* → *Create role*. Pon
-   por ejemplo el ID `internal-read` y añade los privilegios
-   `nx-repository-view-nuget-internal-browse` y
-   `nx-repository-view-nuget-internal-read`. Si además va a **publicar**, crea un
-   segundo rol (`internal-write`) con `nx-repository-view-nuget-internal-add` y
-   `nx-repository-view-nuget-internal-edit`.
-3. *Security* → *Users* → *Create local user*: usuario, contraseña y el rol
-   que acabas de crear.
-4. El compañero usa ese usuario y contraseña en su `nuget.config`.
+Por defecto se conservan, de cada paquete, las **3** últimas versiones
+mayores, **5** menores por cada mayor, **5** parches por cada menor y **10**
+prereleases. Se cambia en `infra/.env` (`NUGET_RETENTION_MAJOR`,
+`NUGET_RETENTION_MINOR`, `NUGET_RETENTION_PATCH`,
+`NUGET_RETENTION_PRERELEASE`) y se aplica con `--update`. La limpieza ocurre al
+subir una versión nueva del paquete.
 
-Para un servidor de integración continua (CI), usa un usuario propio con rol
-de escritura en lugar de `cenit-admin`.
-
-> ℹ️ Puedes crear más feeds (por cliente, por equipo…) desde el panel de Nexus:
-> *Repositories* → *Create repository* → `nuget (hosted)`.
-
-### Licencia y límites de Nexus
-
-Nexus Community Edition es **gratuita** pero con su propia licencia
-(no es software libre) y con límites: **40.000 componentes y 100.000 peticiones
-al día**; al superarlos Nexus no deja subir paquetes nuevos hasta volver bajo
-los límites. Durante la instalación se te pide **aceptar su EULA**
-([texto aquí](https://links.sonatype.com/products/nxrm/ce-eula)); si dices que
-no, Nexus no permite subir ni descargar hasta que lo aceptes en su panel.
-Necesita unos 2 GB de memoria.
-
-> ⚠️ Si actualizas desde una versión anterior que usaba Forgejo como
-> repositorio NuGet: `--update` lo sustituye por Nexus. Los paquetes que
-> hubiera en Forgejo **no se migran** (hay que volver a publicarlos) y su
-> volumen de datos queda sin uso (`docker volume rm cenit_forgejo_data` para
-> borrarlo cuando ya no lo necesites).
+> ⚠️ Si actualizas desde una versión que usaba **Nexus**: `--update` lo
+> sustituye por BaGetter. Los paquetes de Nexus **no se migran** (hay que
+> volver a publicarlos) y su volumen queda sin uso
+> (`docker volume rm cenit_nexus_data` para borrarlo cuando ya no lo
+> necesites). La dirección del feed cambia a `/v3/index.json`.
 
 ## 12. Crear plantillas de producto
 
@@ -461,7 +442,9 @@ editarlo y aplicar los cambios con `--update`. Ejemplos:
   **Administración → Ajustes** («Registro de usuarios»; efecto inmediato, sin
   reiniciar). `REGISTRATION_ENABLED` en `infra/.env` es solo el valor inicial:
   en cuanto se cambia desde el portal, manda el del portal.
-- **SQL Server de las aplicaciones** (`APPS_SQL_MODE`): el instalador
+- **SQL Server de las aplicaciones** (`APPS_SQL_MODE`, valor inicial: se
+  cambia en **Administración → Ajustes**; los clientes despliegan siempre con
+  ese modo y un administrador puede elegir otro al desplegar): el instalador
   pregunta si cada aplicación usa **su propio SQL Server** (`dedicated`, la
   imagen SQL que traiga su compose) o un **motor común** (`shared`, el SQL
   Server de la plataforma). En modo común, al desplegar el portal:
@@ -474,11 +457,45 @@ editarlo y aplicar los cambios con `--update`. Ejemplos:
     comparten todas sus instancias. Puede crear bases (las que crea son suyas)
     pero no ve ni puede tocar las de otros clientes ni la de la plataforma.
 
-  La aplicación tiene que crear sus bases al arrancar (Flexygo lo hace con su
-  dacpac). Al borrar una instancia se borran sus bases; al borrar el cliente,
+  La aplicación tiene que crear sus bases al arrancar. A los servicios
+  adaptados el portal les añade la **instalación desatendida de Flexygo**
+  (`Setup__Unattended`, `Setup__ProjectName` = subdominio y
+  `Setup__AdminPassword`, que se pide al desplegar) y el feed del que descargar
+  el dacpac (`DatabaseNuget__NugetUrl`): si el compose apunta al repositorio NuGet de la
+  plataforma (o no indica ninguno) se usa el interno, `http://cenit-nuget:8081`,
+  con el usuario de **solo lectura** `cenit-apps` (`NUGET_READ_TOKEN`); un feed
+  externo se respeta. El paquete `*.Conf.Database` del producto tiene que estar
+  publicado en ese feed, y el backend tiene que usar una versión de Flexygo con
+  instalación desatendida. Al borrar una instancia se borran sus bases; al borrar el cliente,
   su login. El modo solo afecta a los despliegues nuevos. Con la edición
   Express todas las aplicaciones comparten sus límites (~1,4 GB de caché,
   4 núcleos, 10 GB por base): para muchas aplicaciones, usa Standard.
+- **Correo de las aplicaciones Flexygo**: al desplegar un Flexygo, su
+  backend (el servicio con `ConnectionStrings__ConfConnectionString`) recibe
+  **siempre** `MailSettings__Configured=true`, para que no pida el correo al
+  usuario. Si además Cenit tiene SMTP configurado, recibe `MailSettings__*`
+  con ese mismo servidor (salvo que el compose del producto ya defina
+  `MailSettings__Host`). La contraseña llega como variable de Portainer, no en
+  el compose.
+- **Papelera** (`TRASH_RETENTION_DAYS`, 7 días por defecto): borrar una
+  instancia solo la **para** y la manda a la papelera; borrar un cliente
+  (sin instancias activas) también, y deja de poder iniciar sesión. Cada día
+  (y al arrancar el portal) se elimina del todo lo que ha cumplido el plazo:
+  stack, volúmenes, bases del SQL común, imágenes que nadie más use y, en los
+  clientes, su login SQL. Mientras tanto, en **Administración → Papelera** se
+  puede **restaurar** o **eliminar ya**, y el nombre sigue ocupado: desplegar
+  otra instancia con ese nombre da error hasta que se elimine del todo.
+- **Explorador de BBDD** (CloudBeaver, `sqladmin.<dominio>`): está **apagado**
+  por defecto. Un administrador lo abre con **Explorar BBDD** desde
+  *Herramientas* (SQL Server de la plataforma), desde el detalle de una
+  instancia o desde el panel de producto (su base de datos: su SQL Server
+  propio, o el común con el login de su cliente si usa BBDD compartida). El
+  portal lo arranca, lo conecta a esa base y lo abre en otra pestaña sin pedir
+  usuario ni contraseña: el acceso va con un pase de un solo uso del portal y
+  una cookie que Traefik comprueba en cada petición. Se para solo tras
+  `SQLADMIN_IDLE_MINUTES` minutos sin uso (5) y, apagado,
+  `sqladmin.<dominio>` lleva a Cenit. La primera vez descarga su imagen
+  (~400 MB). `CLOUDBEAVER_VERSION` fija su versión (26.2.2).
 - **Edición de SQL Server**: `MSSQL_PID='Express'` por defecto (gratuita y
   apta para producción, hasta 10 GB por base de datos). Si tienes licencia
   de SQL Server pon `Standard`, `Enterprise` o tu clave de producto. No uses
@@ -565,7 +582,7 @@ manteniendo los avisos de copyright y el fichero [NOTICE](../NOTICE).
 licencia no da permiso para usarlas (salvo para indicar el origen del
 código).
 
-El instalador despliega software de terceros (Traefik, Portainer, Nexus,
+El instalador despliega software de terceros (Traefik, Portainer, BaGetter,
 OpenObserve, SQL Server…) que se rige por sus propias licencias: ver
 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md). En particular, al instalar
 se acepta el [EULA de Microsoft SQL Server](https://go.microsoft.com/fwlink/?linkid=857698)

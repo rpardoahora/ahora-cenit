@@ -32,25 +32,46 @@ docker compose up -d          # aplica cambios hechos a mano en .env
 | `app` | `ghcr.io/rpardoahora/ahora-cenit` | `cloud.DOMAIN` | Portal (UI + `/api`). |
 | `sqlserver` | `mssql/server:2022` | — | Solo en la red interna `cenit_internal`. |
 | `openobserve` | `openobserve` | `telemetry.DOMAIN` | Trazas, métricas y logs de auditoría del portal (OTLP). |
-| `nexus` | `sonatype/nexus3:3.96.4` | `nuget.DOMAIN` | Repositorio NuGet (Nexus Repository Community Edition). También en `127.0.0.1:5100`: en local es su URL pública (`dotnet` no resuelve `*.localhost`). Necesita ~2 GB de memoria (`NEXUS_JAVA_OPTS` en `.env` ajusta la JVM). |
+| `nuget` | `bagetter/bagetter:1.6.5` | `nuget.DOMAIN` | Repositorio NuGet privado (BaGetter). También en `127.0.0.1:5100`: en local es su URL pública (`dotnet` no resuelve `*.localhost`). |
 
 Volúmenes (todos con prefijo `cenit_`): `cenit_sqlserver_data`,
 `cenit_portainer_data`, `cenit_registry_data`, `cenit_openobserve_data`,
-`cenit_nexus_data`, `cenit_letsencrypt`.
+`cenit_nuget_data`, `cenit_letsencrypt`.
 
-### NuGet (Nexus)
+### Explorador de BBDD (CloudBeaver bajo demanda)
 
-El instalador espera a que Nexus arranque y lo configura por su API REST:
-fija la contraseña de `admin` (la misma que el resto; Nexus arranca con una
-aleatoria en `/nexus-data/admin.password`), acepta el EULA de la edición
-Community (te lo pregunta), crea los feeds `internal` y `public` (NuGet
-*hosted*), borra los repositorios de ejemplo (maven y nuget), da al usuario
-anónimo un rol `public-read` que solo **lee** el feed `public`, y crea el
-usuario `cenit-admin` (rol `nx-admin`) con el token de plataforma `CENIT_TOKEN`
-como contraseña. Nexus respeta `X-Forwarded-Proto/Host`, así que los enlaces
-de los feeds salen bien detrás de Traefik. `NEXUS_VERSION` en `.env` permite
-fijar otra versión (no uses `latest`: Nexus migra su base de datos y no admite
-volver atrás).
+No está en el compose: el portal crea el contenedor `cenit-sqladmin` (imagen
+`dbeaver/cloudbeaver`, volumen `cenit_sqladmin_data`, redes `proxy`,
+`cenit_sql` y `cenit_sqladmin`) la primera vez que un administrador pulsa
+**Explorar BBDD**, escribe en su espacio de trabajo una única conexión global
+(la base elegida) y lo arranca. CloudBeaver funciona en modo anónimo; lo que
+protege `sqladmin.DOMAIN` es el `forwardAuth` de Traefik contra el portal
+(`/api/sqladmin/auth`, alias `cenit-portal`), que exige la cookie que deja el
+pase de un solo uso (`/__cenit/enter`, enrutado al portal). Sin el contenedor,
+un router de prioridad 1 en el portal redirige a Cenit. El portal lo para tras
+`SQLADMIN_IDLE_MINUTES` minutos sin peticiones. Los SQL Server propios de las
+instancias se unen a `cenit_sqladmin` (alias `<instancia>-sql`) al explorarlos.
+
+### NuGet (BaGetter)
+
+Se configura entero por variables de entorno en el compose (el instalador solo
+espera a que responda `/health`):
+
+- **Feed privado**: `Authentication__Credentials__*` con `cenit-admin`
+  (`CENIT_TOKEN`), `cenit-apps` (`NUGET_READ_TOKEN`, solo lectura, para las
+  aplicaciones) y `admin` (`ADMIN_PASSWORD`). Sin credenciales, `/v3` responde 401.
+- **Subir y borrar**: `ApiKey` = `CENIT_TOKEN`.
+- **Borrado definitivo**: `PackageDeletionBehavior=HardDelete`; no se admite
+  sobrescribir una versión (`AllowPackageOverwrites=false`).
+- **Retención**: `Retention__Max{Major,Minor,Patch,Prerelease}Versions` desde
+  `NUGET_RETENTION_*` (3/5/5/10 por defecto). BaGetter solo la aplica si están
+  las cuatro.
+- **Web**: Traefik la protege con `cenit-auth` (htpasswd); las rutas del feed
+  (`/v3`, `/api`, `/health`) van por otro router sin ese middleware porque las
+  autentica BaGetter (y `dotnet nuget push` solo manda la API key).
+
+Datos (SQLite y paquetes) en el volumen `cenit_nuget_data` (`/data`).
+`BAGETTER_VERSION` en `.env` fija otra versión.
 
 ## Cómo queda todo enlazado
 

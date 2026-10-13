@@ -5,11 +5,21 @@ namespace AhoraCenit.Api.Contracts.Applications;
 /// indicarlo, para desplegar en nombre de un cliente; si se omite, la
 /// aplicación es de quien hace la petición.
 /// </param>
+/// <param name="AdminPassword">
+/// Contraseña inicial del administrador de la aplicación. Solo se usa en modo motor SQL común, donde la
+/// aplicación se instala sola al arrancar (Flexygo: Setup__AdminPassword); en ese caso es obligatoria.
+/// </param>
+/// <param name="SqlMode">
+/// Solo administradores: "Dedicated" o "Shared" para esta instancia. Si se omite (y siempre para un
+/// cliente) se usa el modo de los ajustes del portal.
+/// </param>
 public record CreateApplicationRequest(
     Guid ProductId,
     string? Subdomain,
     Dictionary<string, string>? EnvVars,
-    Guid? UserId = null);
+    Guid? UserId = null,
+    string? AdminPassword = null,
+    string? SqlMode = null);
 
 public record SetApplicationActiveRequest(bool IsActive);
 

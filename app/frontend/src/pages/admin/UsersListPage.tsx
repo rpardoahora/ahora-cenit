@@ -35,7 +35,7 @@ export function UsersListPage() {
     try {
       await usersApi.remove(user.id)
       setUsers((prev) => (prev ? prev.filter((u) => u.id !== user.id) : prev))
-      toast.success("Usuario eliminado.")
+      toast.success("Usuario movido a la papelera.")
     } catch (err) {
       if (!(err instanceof ApiError)) toast.error("No se pudo eliminar el usuario.")
     }
@@ -105,8 +105,8 @@ export function UsersListPage() {
                         </Button>
                       }
                       title="Eliminar usuario"
-                      description={`Se eliminará "${user.name}" de forma permanente. Debe no tener aplicaciones desplegadas.`}
-                      confirmLabel="Eliminar"
+                      description={`"${user.name}" pasará a la papelera: no podrá iniciar sesión y se borrará del todo (con su login SQL) pasados los días de retención. Debe no tener aplicaciones desplegadas.`}
+                      confirmLabel="Mover a la papelera"
                       destructive
                       onConfirm={() => handleDelete(user)}
                     />

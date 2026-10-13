@@ -1,5 +1,7 @@
 import { toast } from "sonner"
 import type {
+  ProductOverview,
+  Trash,
   AdminTool,
   AdminUser,
   AppConfig,
@@ -119,8 +121,30 @@ export const configApi = {
 
 export const adminSettingsApi = {
   get: () => request<PortalSettings>("/admin/settings"),
-  update: (settings: PortalSettings) =>
+  update: (settings: Partial<PortalSettings>) =>
     request<PortalSettings>("/admin/settings", { method: "PUT", body: settings }),
+}
+
+// ---------- Explorador de BBDD (CloudBeaver bajo demanda) ----------
+
+export interface SqlAdminLaunch {
+  state: "starting" | "ready" | "error"
+  message: string
+  launchUrl?: string | null
+}
+
+export const sqlAdminApi = {
+  /** Sin instancia: el SQL Server de la plataforma. Los errores los muestra quien llama. */
+  launch: (applicationId?: string) =>
+    request<{ id: string }>("/admin/sqladmin/launch", { method: "POST", body: { applicationId: applicationId ?? null }, silent: true }),
+  status: (id: string) => request<SqlAdminLaunch>(`/admin/sqladmin/launch/${id}`, { silent: true }),
+}
+
+// ---------- Papelera ----------
+
+export const trashApi = {
+  list: () => request<Trash>("/admin/trash"),
+  purgeExpired: () => request<{ applications: number; users: number }>("/admin/trash/purge-expired", { method: "POST" }),
 }
 
 // ---------- Admin tools ----------
@@ -173,6 +197,7 @@ export const productsApi = {
     }),
   deployStats: (id: string) =>
     request<DeployStats>(`/products/${id}/deploy-stats`, { silent: true }),
+  overview: (id: string) => request<ProductOverview>(`/products/${id}/overview`),
   exportAll: () => request<ProductExportEnvelope>("/products/export"),
   importAll: (payload: ProductExportEnvelope) =>
     request<ImportProductsResult>("/products/import", { method: "POST", body: payload }),
@@ -192,7 +217,10 @@ export const usersApi = {
       method: "POST",
       body: { newPassword },
     }),
-  remove: (id: string) => request<void>(`/users/${id}`, { method: "DELETE" }),
+  /** Lo manda a la papelera; con purge lo borra del todo ya (con su login SQL e instancias). */
+  remove: (id: string, options?: { purge?: boolean }) =>
+    request<void>(`/users/${id}${options?.purge ? "?purge=true" : ""}`, { method: "DELETE" }),
+  restore: (id: string) => request<void>(`/users/${id}/restore`, { method: "POST" }),
 }
 
 // ---------- Applications ----------
@@ -216,7 +244,9 @@ export const applicationsApi = {
     request<Application>(`/applications/${id}/start`, { method: "POST" }),
   stop: (id: string) =>
     request<Application>(`/applications/${id}/stop`, { method: "POST" }),
-  remove: (id: string) =>
-    request<void>(`/applications/${id}`, { method: "DELETE" }),
+  /** La manda a la papelera; con purge (solo administradores) la borra del todo ya. */
+  remove: (id: string, options?: { purge?: boolean }) =>
+    request<void>(`/applications/${id}${options?.purge ? "?purge=true" : ""}`, { method: "DELETE" }),
+  restore: (id: string) => request<Application>(`/applications/${id}/restore`, { method: "POST" }),
   usage: () => request<ApplicationUsage[]>("/applications/usage"),
 }

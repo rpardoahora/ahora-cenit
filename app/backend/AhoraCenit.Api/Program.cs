@@ -2,6 +2,8 @@ using System.Text;
 using AhoraCenit.Api.Data;
 using AhoraCenit.Api.Features.AdminSettings;
 using AhoraCenit.Api.Features.AdminTools;
+using AhoraCenit.Api.Features.Trash;
+using AhoraCenit.Api.Features.SqlAdmin;
 using AhoraCenit.Api.Features.Applications;
 using AhoraCenit.Api.Features.Auth;
 using AhoraCenit.Api.Features.Products;
@@ -27,6 +29,8 @@ builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection(AuthOpt
 builder.Services.Configure<SmtpOptions>(builder.Configuration.GetSection(SmtpOptions.SectionName));
 builder.Services.Configure<AdminToolsOptions>(builder.Configuration.GetSection(AdminToolsOptions.SectionName));
 builder.Services.Configure<AppsSqlOptions>(builder.Configuration.GetSection(AppsSqlOptions.SectionName));
+builder.Services.Configure<FeedsOptions>(builder.Configuration.GetSection(FeedsOptions.SectionName));
+builder.Services.AddHttpClient<IFeedVersionService, FeedVersionService>(client => client.Timeout = TimeSpan.FromSeconds(15));
 
 // --- Database ---
 builder.Services.AddDbContext<AppDbContext>(options =>
@@ -36,6 +40,14 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped<IPortalSettings, PortalSettings>();
 builder.Services.AddScoped<ISharedSqlProvisioner, SharedSqlProvisioner>();
+builder.Services.Configure<TrashOptions>(builder.Configuration.GetSection(TrashOptions.SectionName));
+builder.Services.AddScoped<ITrashService, TrashService>();
+builder.Services.AddHostedService<TrashCleanupService>();
+builder.Services.Configure<SqlAdminOptions>(builder.Configuration.GetSection(SqlAdminOptions.SectionName));
+builder.Services.AddSingleton<SqlAdminService>();
+builder.Services.AddHostedService<SqlAdminIdleService>();
+// La primera vez descarga la imagen de CloudBeaver (~400 MB) a través de Portainer.
+builder.Services.AddHttpClient("sqladmin-docker", client => client.Timeout = TimeSpan.FromMinutes(15));
 builder.Services.AddSingleton<IAuditLogger, AuditLogger>();
 builder.Services.AddHttpClient<IPortainerClient, PortainerClient>(client =>
 {
@@ -212,16 +224,26 @@ app.MapGroup("/api/applications").MapApplicationsEndpoints();
 app.MapGroup("/api/users").MapUsersEndpoints();
 app.MapGroup("/api/admin/tools").MapAdminToolsEndpoints();
 app.MapGroup("/api/admin/settings").MapAdminSettingsEndpoints();
+app.MapGroup("/api/admin/trash").MapTrashEndpoints();
+app.MapSqlAdminEndpoints();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 
 // Configuración pública que necesita el frontend antes de iniciar sesión.
-app.MapGet("/api/config", async (IConfiguration configuration, IPortalSettings settings, CancellationToken ct) =>
-    Results.Ok(new
+app.MapGet("/api/config", async (IConfiguration configuration, IPortalSettings settings, ITrashService trash, CancellationToken ct) =>
+{
+    var appsSqlMode = await settings.GetAppsSqlModeAsync(ct);
+    return Results.Ok(new
     {
         baseDomain = configuration["BaseDomain"] ?? "ahoracenit.localhost",
-        registrationEnabled = await settings.IsRegistrationEnabledAsync(ct)
-    }))
+        registrationEnabled = await settings.IsRegistrationEnabledAsync(ct),
+        // Modo SQL por defecto al desplegar; en "Shared" el formulario pide la contraseña del administrador de la app.
+        appsSqlMode = appsSqlMode.ToString(),
+        sharedSql = appsSqlMode == AppsSqlMode.Shared,
+        // Días que pasa en la papelera lo que se borra (para avisarlo al borrar).
+        trashRetentionDays = trash.RetentionDays
+    });
+})
     .AllowAnonymous();
 
 // Frontend (Vite build) se sirve desde wwwroot, en el mismo servicio/puerto que la API.

@@ -26,6 +26,7 @@ public static class ApplicationsEndpoints
         group.MapPost("/{id:guid}/stop", StopAsync);
         group.MapPost("/{id:guid}/start", StartAsync);
         group.MapDelete("/{id:guid}", DeleteAsync);
+        group.MapPost("/{id:guid}/restore", RestoreAsync);
 
         return group;
     }
@@ -42,10 +43,30 @@ public static class ApplicationsEndpoints
         IAuditLogger auditLogger,
         ISharedSqlProvisioner sharedSql,
         IOptions<AppsSqlOptions> appsSqlOptions,
+        IPortalSettings portalSettings,
+        IOptions<SmtpOptions> smtpOptions,
+        ITrashService trashService,
         ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
+
+        // Modo SQL de esta instancia: el de los ajustes; un administrador puede elegir otro.
+        var sqlMode = await portalSettings.GetAppsSqlModeAsync(ct);
+        if (!string.IsNullOrWhiteSpace(request.SqlMode))
+        {
+            if (!principal.IsAdmin())
+            {
+                return Results.Json(new { message = "Solo un administrador puede elegir el modo SQL al desplegar." }, statusCode: StatusCodes.Status403Forbidden);
+            }
+
+            if (!Enum.TryParse<AppsSqlMode>(request.SqlMode, ignoreCase: true, out var requested) || !Enum.IsDefined(requested))
+            {
+                return Results.BadRequest(new { message = "sqlMode debe ser \"Dedicated\" o \"Shared\"." });
+            }
+
+            sqlMode = requested;
+        }
         var userId = principal.GetUserId();
 
         // Un admin (o el token de API) puede desplegar en nombre de un cliente.
@@ -85,9 +106,27 @@ public static class ApplicationsEndpoints
             requestedSlugSource = SlugGenerator.Slugify(product.Name, user.ClientSlug);
         }
 
+        // Un nombre pedido expresamente que tiene una instancia en la papelera sigue ocupado hasta que se
+        // borre del todo: se avisa en lugar de inventarse otro.
+        if (!string.IsNullOrWhiteSpace(request.Subdomain))
+        {
+            var trashed = await db.Applications.IgnoreQueryFilters()
+                .Where(a => a.Subdomain == requestedSlugSource && a.DeletedAt != null)
+                .Select(a => a.DeletedAt)
+                .FirstOrDefaultAsync(ct);
+            if (trashed is not null)
+            {
+                return Results.Conflict(new
+                {
+                    message = $"El nombre \"{requestedSlugSource}\" está en uso: hay una instancia con ese nombre en la papelera " +
+                              $"(se borrará del todo el {trashService.PurgeDate(trashed.Value):dd/MM/yyyy}). Elige otro nombre."
+                });
+            }
+        }
+
         var subdomain = await SlugGenerator.ResolveUniqueAsync(
             requestedSlugSource,
-            slug => db.Applications.AnyAsync(a => a.Subdomain == slug, ct));
+            slug => db.Applications.IgnoreQueryFilters().AnyAsync(a => a.Subdomain == slug, ct));
 
         // Merge product schema defaults with the user's overrides. Las variables de solo
         // lectura u ocultas ignoran cualquier valor recibido: su valor siempre es el
@@ -110,6 +149,16 @@ public static class ApplicationsEndpoints
                 }
 
                 mergedEnvVars[key] = value;
+            }
+        }
+
+        // BBDD compartida: las variables del SQL del compose (p. ej. la contraseña de sa) no se usan; no se
+        // guardan con la instancia ni llegan a Portainer, así que tampoco se ven después.
+        if (sqlMode == AppsSqlMode.Shared)
+        {
+            foreach (var key in SharedSqlComposeRewriter.SqlServiceVariables(product.ComposeTemplate))
+            {
+                mergedEnvVars.Remove(key);
             }
         }
 
@@ -141,18 +190,48 @@ public static class ApplicationsEndpoints
         var composeContent = product.ComposeTemplate;
         SharedSqlRewriteResult? sqlRewrite = null;
         string? sqlError = null;
-        if (sharedSql.Enabled)
+        if (sqlMode == AppsSqlMode.Shared)
         {
             var sqlOptions = appsSqlOptions.Value;
+            var usesPlatformFeed = false;
+            // Un producto en versión prerelease (imágenes x.y.z-beta) tiene también su dacpac en prerelease:
+            // sin PreReleaseVersions, Flexygo no lo encuentra en el feed.
+            var isPrerelease = PrereleaseImageTag.IsMatch(composeContent);
+            var environment = new Dictionary<string, Func<string?, string?>>
+            {
+                // Instalación desatendida de Flexygo: crea o actualiza sus bases desplegando el dacpac
+                // del paquete DatabaseNuget con las cadenas de conexión de arriba.
+                ["Setup__Unattended"] = _ => "true",
+                ["Setup__ProjectName"] = _ => subdomain,
+                ["Setup__AdminPassword"] = _ => "${" + AppAdminPasswordVariable + "}",
+                // El orden importa: la URL decide si van las credenciales del repositorio NuGet de la plataforma.
+                ["DatabaseNuget__NugetUrl"] = current =>
+                {
+                    var internalUrl = string.IsNullOrWhiteSpace(current)
+                        ? sqlOptions.NugetInternalBaseUrl.TrimEnd('/') + "/" + sqlOptions.NugetDefaultFeedPath.TrimStart('/')
+                        : sqlOptions.ToInternalNugetUrl(current);
+                    usesPlatformFeed = internalUrl is not null;
+                    return internalUrl;
+                },
+                ["DatabaseNuget__PreReleaseVersions"] = current => string.IsNullOrWhiteSpace(current) && isPrerelease ? "true" : null,
+                ["DatabaseNuget__NugetUser"] = _ => usesPlatformFeed ? "${" + NugetUserVariable + "}" : null,
+                ["DatabaseNuget__NugetPassword"] = _ => usesPlatformFeed ? "${" + NugetPasswordVariable + "}" : null
+            };
+
             sqlRewrite = SharedSqlComposeRewriter.Rewrite(
                 composeContent,
                 SharedSqlComposeRewriter.DatabasePrefix(subdomain),
                 userValue: "${" + SharedSqlUserVariable + "}",
                 passwordValue: "${" + SharedSqlPasswordVariable + "}",
                 sqlOptions.Host,
-                sqlOptions.Network);
+                sqlOptions.Network,
+                environment);
 
-            if (sqlRewrite.Changed)
+            if (sqlRewrite.Changed && string.IsNullOrWhiteSpace(request.AdminPassword))
+            {
+                sqlError = "Indica la contraseña inicial del administrador de la aplicación (adminPassword): en modo motor SQL común la aplicación se instala sola al arrancar.";
+            }
+            else if (sqlRewrite.Changed)
             {
                 try
                 {
@@ -160,6 +239,9 @@ public static class ApplicationsEndpoints
                     await db.SaveChangesAsync(CancellationToken.None);
                     portainerEnvVars[SharedSqlUserVariable] = user.SqlLogin!;
                     portainerEnvVars[SharedSqlPasswordVariable] = user.SqlPassword!;
+                    portainerEnvVars[AppAdminPasswordVariable] = request.AdminPassword!;
+                    portainerEnvVars[NugetUserVariable] = sqlOptions.NugetUser;
+                    portainerEnvVars[NugetPasswordVariable] = sqlOptions.NugetPassword;
                     composeContent = sqlRewrite.Compose;
                 }
                 catch (Exception ex)
@@ -175,6 +257,34 @@ public static class ApplicationsEndpoints
                 }
             }
         }
+
+        // Flexygo hereda el SMTP de Cenit (si lo tiene): MailSettings__* en su backend. Se respeta el producto
+        // que ya define su propio servidor de correo.
+        var smtp = smtpOptions.Value;
+        if (!string.IsNullOrWhiteSpace(smtp.Host))
+        {
+            var mail = new Dictionary<string, Func<string?, string?>>
+            {
+                ["MailSettings__Host"] = _ => smtp.Host.Trim(),
+                ["MailSettings__Port"] = _ => smtp.Port.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["MailSettings__Ssl"] = _ => smtp.EnableSsl ? "true" : "false",
+                ["MailSettings__UserName"] = _ => smtp.User,
+                ["MailSettings__Password"] = _ => "${" + SmtpPasswordVariable + "}",
+                ["MailSettings__From"] = _ => string.IsNullOrWhiteSpace(smtp.From) ? smtp.User : smtp.From
+            };
+            var (withMail, mailServices) = SharedSqlComposeRewriter.SetServiceEnvironment(composeContent, IsFlexygoBackendWithoutMail, mail);
+            if (mailServices.Count > 0)
+            {
+                composeContent = withMail;
+                portainerEnvVars[SmtpPasswordVariable] = smtp.Password;
+            }
+        }
+
+        // Siempre (haya SMTP o no): el correo queda marcado como configurado para que Flexygo no lo pida al usuario.
+        composeContent = SharedSqlComposeRewriter.SetServiceEnvironment(
+            composeContent,
+            IsFlexygoBackend,
+            new Dictionary<string, Func<string?, string?>> { ["MailSettings__Configured"] = current => current == "true" ? null : "true" }).Compose;
 
         // A partir de aquí usamos CancellationToken.None a propósito: el despliegue en
         // Portainer (pull de imagen incluido) puede tardar más que la conexión HTTP del
@@ -207,6 +317,7 @@ public static class ApplicationsEndpoints
             product.Name,
             application.Subdomain,
             EnvVars = RedactEnvVars(mergedEnvVars, schema),
+            SqlMode = sqlMode.ToString(),
             SharedSql = sqlRewrite is { Changed: true }
                 ? new { sqlRewrite.DisabledServices, sqlRewrite.RewrittenServices, sqlRewrite.Databases, sqlRewrite.Warnings }
                 : null
@@ -537,20 +648,24 @@ public static class ApplicationsEndpoints
         return Results.Ok(ToResponse(application, configuration));
     }
 
+    /// <summary>
+    /// Borrar manda la instancia a la papelera: se para y se borra del todo pasados los días de retención
+    /// (TrashCleanupService). <paramref name="purge"/> (solo administradores) la borra del todo ya.
+    /// </summary>
     private static async Task<IResult> DeleteAsync(
         Guid id,
+        bool? purge,
         ClaimsPrincipal principal,
         AppDbContext db,
-        IPortainerClient portainerClient,
+        ITrashService trash,
         IAuditLogger auditLogger,
-        ISharedSqlProvisioner sharedSql,
-        ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
 
-        var application = await db.Applications.Include(a => a.User).FirstOrDefaultAsync(a => a.Id == id, ct);
-        if (application is null)
+        // Una que ya está en la papelera solo se puede borrar del todo (purge).
+        var application = await db.Applications.IgnoreQueryFilters().Include(a => a.User).FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (application is null || (application.DeletedAt is not null && purge != true))
         {
             return Results.NotFound();
         }
@@ -560,48 +675,67 @@ public static class ApplicationsEndpoints
             return Results.Forbid();
         }
 
-        if (application.PortainerStackId is not null)
+        if (purge == true && !principal.IsAdmin())
         {
-            var result = await portainerClient.DeleteStackAsync(application.PortainerStackId.Value, application.PortainerEndpointId, application.Subdomain, ct);
-            if (!result.Success)
-            {
-                sw.Stop();
-                await auditLogger.RecordAsync(
-                    principal, "Application", "Delete", application.Id, parameters: null, result: null,
-                    sw.Elapsed, success: false, errorMessage: result.ErrorMessage);
-
-                return Results.Json(new { message = "No se pudo borrar el stack en Portainer.", error = result.ErrorMessage }, statusCode: StatusCodes.Status502BadGateway);
-            }
+            return Results.Json(new { message = "Solo un administrador puede borrar una aplicación del todo." }, statusCode: StatusCodes.Status403Forbidden);
         }
 
-        // Sus bases en el SQL común (si las tiene). Se intenta aunque el modo actual sea
-        // Dedicated: la instancia pudo desplegarse cuando el modo era Shared.
-        if (!string.IsNullOrEmpty(application.User?.SqlLogin))
-        {
-            try
-            {
-                await sharedSql.DropApplicationDatabasesAsync(
-                    application.User.SqlLogin, SharedSqlComposeRewriter.DatabasePrefix(application.Subdomain), CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                loggerFactory.CreateLogger("AhoraCenit.Applications").LogWarning(ex,
-                    "No se pudieron borrar las bases de {Subdomain} en el SQL Server común", application.Subdomain);
-            }
-        }
-
-        var deletedSnapshot = new { application.Subdomain, application.ProductId, application.UserId };
-
-        db.Applications.Remove(application);
-        await db.SaveChangesAsync(ct);
+        var snapshot = new { application.Subdomain, application.ProductId, application.UserId };
+        var error = purge == true
+            ? await trash.PurgeApplicationAsync(application, CancellationToken.None)
+            : await trash.TrashApplicationAsync(application, CancellationToken.None);
         sw.Stop();
 
-        await auditLogger.RecordAsync(
-            principal, "Application", "Delete", id,
-            parameters: null, result: deletedSnapshot,
-            sw.Elapsed, success: true);
+        var action = purge == true ? "Purge" : "Delete";
+        if (error is not null)
+        {
+            await auditLogger.RecordAsync(principal, "Application", action, id, parameters: null, result: null,
+                sw.Elapsed, success: false, errorMessage: error);
+            return Results.Json(new { message = "No se pudo eliminar la aplicación en Portainer.", error }, statusCode: StatusCodes.Status502BadGateway);
+        }
 
+        await auditLogger.RecordAsync(principal, "Application", action, id,
+            parameters: null,
+            result: purge == true ? snapshot : new { snapshot.Subdomain, snapshot.ProductId, snapshot.UserId, PurgeDate = trash.PurgeDate(application.DeletedAt!.Value) },
+            sw.Elapsed, success: true);
         return Results.NoContent();
+    }
+
+    /// <summary>Saca una instancia de la papelera y la vuelve a arrancar (solo administradores).</summary>
+    private static async Task<IResult> RestoreAsync(
+        Guid id,
+        ClaimsPrincipal principal,
+        AppDbContext db,
+        ITrashService trash,
+        IAuditLogger auditLogger,
+        IConfiguration configuration,
+        CancellationToken ct)
+    {
+        if (!principal.IsAdmin())
+        {
+            return Results.Forbid();
+        }
+
+        var sw = Stopwatch.StartNew();
+        var application = await db.Applications.IgnoreQueryFilters().Include(a => a.User).Include(a => a.Product)
+            .FirstOrDefaultAsync(a => a.Id == id && a.DeletedAt != null, ct);
+        if (application is null)
+        {
+            return Results.NotFound();
+        }
+
+        if (application.User?.DeletedAt is not null)
+        {
+            return Results.Conflict(new { message = $"Su cliente ({application.User.Name}) también está en la papelera: restáuralo primero." });
+        }
+
+        var error = await trash.RestoreApplicationAsync(application, CancellationToken.None);
+        sw.Stop();
+        await auditLogger.RecordAsync(principal, "Application", "Restore", id, parameters: null,
+            result: new { application.Subdomain }, sw.Elapsed, success: error is null, errorMessage: error);
+        return error is null
+            ? Results.Ok(ToResponse(application, configuration))
+            : Results.Json(new { message = "No se pudo arrancar la aplicación en Portainer.", error }, statusCode: StatusCodes.Status502BadGateway);
     }
 
     /// <summary>Sustituye los valores de las env vars marcadas como secretas u ocultas en el schema del producto antes de auditarlas/loguearlas.</summary>
@@ -627,6 +761,24 @@ public static class ApplicationsEndpoints
     /// <summary>Variables que el portal pasa a Portainer con el login SQL del cliente (modo motor común).</summary>
     private const string SharedSqlUserVariable = "CENIT_SQL_USER";
     private const string SharedSqlPasswordVariable = "CENIT_SQL_PASSWORD";
+    private const string AppAdminPasswordVariable = "CENIT_APP_ADMIN_PASSWORD";
+    private const string SmtpPasswordVariable = "CENIT_SMTP_PASSWORD";
+
+    /// <summary>Backend de Flexygo: el servicio con la base de configuración.</summary>
+    private static bool IsFlexygoBackend(IReadOnlyList<string> serviceLines) =>
+        serviceLines.Any(l => l.Contains("ConnectionStrings__ConfConnectionString", StringComparison.Ordinal));
+
+    /// <summary>Backend de Flexygo que no define ya su propio servidor de correo.</summary>
+    private static bool IsFlexygoBackendWithoutMail(IReadOnlyList<string> serviceLines) =>
+        IsFlexygoBackend(serviceLines)
+        && !serviceLines.Any(l => System.Text.RegularExpressions.Regex.IsMatch(l, @"MailSettings__Host\s*[:=]\s*[""']?[^\s""'#]"));
+
+    /// <summary>Alguna imagen (sin comentar) con un tag de versión prerelease, p. ej. "registry/app:1.0.5.1-beta".</summary>
+    private static readonly System.Text.RegularExpressions.Regex PrereleaseImageTag = new(
+        @"^[ \t]+image[ \t]*:[ \t]*[""']?[^""'\s#]+:v?\d+(\.\d+)*-[0-9A-Za-z.-]+[""']?[ \t]*$",
+        System.Text.RegularExpressions.RegexOptions.Multiline);
+    private const string NugetUserVariable = "CENIT_NUGET_USER";
+    private const string NugetPasswordVariable = "CENIT_NUGET_PASSWORD";
 
     private static string GetBaseDomain(IConfiguration configuration) =>
         configuration["BaseDomain"] ?? "ahoracenit.localhost";
@@ -635,7 +787,7 @@ public static class ApplicationsEndpoints
     /// URL pública de la aplicación con el esquema y el puerto del portal
     /// (p. ej. http://app.ahoracenit.localhost:8880 en local, https://app.midominio.com en producción).
     /// </summary>
-    private static string BuildPublicUrl(string fullDomain, IConfiguration configuration)
+    internal static string BuildPublicUrl(string fullDomain, IConfiguration configuration)
     {
         var scheme = "https";
         var portSuffix = string.Empty;

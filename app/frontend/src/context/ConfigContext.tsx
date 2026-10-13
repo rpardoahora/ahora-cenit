@@ -13,6 +13,8 @@ import type { AppConfig } from "@/types"
 interface ConfigContextValue {
   /** Mientras no se sepa lo contrario, el registro se considera abierto (no parpadea el botón). */
   registrationEnabled: boolean
+  /** Días que pasa en la papelera lo que se borra (7 mientras no se sepa). */
+  trashRetentionDays: number
   isLoading: boolean
   refresh: () => Promise<void>
 }
@@ -39,7 +41,12 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   }, [refresh])
 
   const value = useMemo<ConfigContextValue>(
-    () => ({ registrationEnabled: config?.registrationEnabled ?? true, isLoading, refresh }),
+    () => ({
+      registrationEnabled: config?.registrationEnabled ?? true,
+      trashRetentionDays: config?.trashRetentionDays ?? 7,
+      isLoading,
+      refresh,
+    }),
     [config, isLoading, refresh]
   )
 

@@ -4,10 +4,79 @@ export interface AppConfig {
   baseDomain: string
   /** Si es false, nadie puede crearse una cuenta desde el portal (solo un admin). */
   registrationEnabled: boolean
+  /** Modo SQL por defecto al desplegar (el de los ajustes del portal). */
+  appsSqlMode: AppsSqlMode
+  /** appsSqlMode === "Shared": las aplicaciones se instalan solas y piden la contraseña de su administrador. */
+  sharedSql: boolean
+  /** Días que pasa en la papelera lo que se borra. */
+  trashRetentionDays: number
 }
+
+/** GET /api/admin/trash */
+export interface Trash {
+  retentionDays: number
+  applications: {
+    id: string
+    subdomain: string
+    productName: string
+    userId: string
+    clientName: string
+    clientSlug: string
+    deletedAt: string
+    purgeAt: string
+  }[]
+  users: { id: string; name: string; email: string; clientSlug: string; deletedAt: string; purgeAt: string }[]
+}
+
+/** GET /api/products/{id}/overview */
+export interface ProductOverview {
+  productId: string
+  productName: string
+  images: ProductImageInfo[]
+  nuget: ProductNugetInfo | null
+  installations: ProductInstallation[]
+}
+
+export interface ProductImageInfo {
+  service: string
+  repository: string
+  configuredTag: string | null
+  latestTag: string | null
+  updateAvailable: boolean
+  recentTags: string[]
+  repositoryUrl: string | null
+  error: string | null
+}
+
+export interface ProductNugetInfo {
+  packageId: string
+  packageIdInferred: boolean
+  feedUrl: string | null
+  latestVersion: string | null
+  recentVersions: string[]
+  repositoryUrl: string | null
+  error: string | null
+}
+
+export interface ProductInstallation {
+  applicationId: string
+  subdomain: string
+  url: string
+  userId: string
+  clientName: string
+  clientSlug: string
+  status: ApplicationStatus
+  createdAt: string
+  images: { service: string; image: string; tag: string | null; state: string }[]
+  outdated: boolean
+}
+
+/** Dedicated: cada aplicación con la imagen SQL de su compose. Shared: todas en el SQL Server de la plataforma. */
+export type AppsSqlMode = "Dedicated" | "Shared"
 
 export interface PortalSettings {
   registrationEnabled: boolean
+  appsSqlMode: AppsSqlMode
 }
 
 export interface AdminTool {
@@ -15,6 +84,8 @@ export interface AdminTool {
   name: string
   description: string
   url: string
+  /** Solo el repositorio NuGet: el feed para dotnet/NuGet. */
+  feedUrl?: string | null
 }
 
 export interface User {
@@ -78,9 +149,11 @@ export interface Product {
   composeTemplate: string
   envVarsSchema: EnvVarSchema[]
   isActive: boolean
+  /** Variables que no se piden en modo BBDD compartida (las usa solo el SQL del compose). */
+  sharedSqlHiddenEnvVars?: string[]
 }
 
-export type ProductInput = Omit<Product, "id">
+export type ProductInput = Omit<Product, "id" | "sharedSqlHiddenEnvVars">
 
 export interface ProductExportItem {
   name: string
@@ -153,6 +226,11 @@ export interface CreateApplicationInput {
   productId: string
   subdomain: string
   envVars: Record<string, string>
+  adminPassword?: string
+  /** Solo administradores: cliente al que se instala (por defecto, el propio administrador). */
+  userId?: string
+  /** Solo administradores. */
+  sqlMode?: AppsSqlMode
 }
 
 export interface ApplicationUsage {

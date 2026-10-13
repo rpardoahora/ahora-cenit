@@ -18,7 +18,10 @@ public static class AdminSettingsEndpoints
     }
 
     private static async Task<IResult> GetAsync(IPortalSettings settings, CancellationToken ct) =>
-        Results.Ok(new PortalSettingsResponse(await settings.IsRegistrationEnabledAsync(ct)));
+        Results.Ok(await ReadAsync(settings, ct));
+
+    private static async Task<PortalSettingsResponse> ReadAsync(IPortalSettings settings, CancellationToken ct) =>
+        new(await settings.IsRegistrationEnabledAsync(ct), (await settings.GetAppsSqlModeAsync(ct)).ToString());
 
     private static async Task<IResult> UpdateAsync(
         UpdatePortalSettingsRequest request,
@@ -28,17 +31,37 @@ public static class AdminSettingsEndpoints
         CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
-        var previous = await settings.IsRegistrationEnabledAsync(ct);
+        AppsSqlMode? appsSqlMode = null;
+        if (request.AppsSqlMode is not null)
+        {
+            if (!Enum.TryParse<AppsSqlMode>(request.AppsSqlMode, ignoreCase: true, out var parsed) || !Enum.IsDefined(parsed))
+            {
+                return Results.BadRequest(new { message = "appsSqlMode debe ser \"Dedicated\" o \"Shared\"." });
+            }
 
-        await settings.SetRegistrationEnabledAsync(request.RegistrationEnabled, ct);
+            appsSqlMode = parsed;
+        }
+
+        var previous = await ReadAsync(settings, ct);
+        if (request.RegistrationEnabled is { } registrationEnabled)
+        {
+            await settings.SetRegistrationEnabledAsync(registrationEnabled, ct);
+        }
+
+        if (appsSqlMode is { } mode)
+        {
+            await settings.SetAppsSqlModeAsync(mode, ct);
+        }
+
+        var current = await ReadAsync(settings, ct);
         sw.Stop();
 
         await auditLogger.RecordAsync(
             principal, "Settings", "Update", entityId: null,
-            parameters: new { request.RegistrationEnabled },
-            result: new { Previous = previous, Current = request.RegistrationEnabled },
+            parameters: request,
+            result: new { Previous = previous, Current = current },
             sw.Elapsed, success: true);
 
-        return Results.Ok(new PortalSettingsResponse(request.RegistrationEnabled));
+        return Results.Ok(current);
     }
 }

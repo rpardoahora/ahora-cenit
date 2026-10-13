@@ -17,4 +17,10 @@ public class AdminToolsOptions
     public string OpenObserveUrl { get; set; } = string.Empty;
 
     public string NuGetUrl { get; set; } = string.Empty;
+
+    /// <summary>Feed NuGet para los clientes (dotnet, la extensión): NUGET_PUBLIC_URL + v3/index.json.</summary>
+    public string NuGetFeedUrl { get; set; } = string.Empty;
+
+    /// <summary>Registry Docker de la plataforma (sin interfaz web: se enlaza su catálogo /v2/_catalog).</summary>
+    public string RegistryUrl { get; set; } = string.Empty;
 }

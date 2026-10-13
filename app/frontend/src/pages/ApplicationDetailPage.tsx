@@ -13,11 +13,15 @@ import {
 } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { StatusBadge } from "@/components/StatusBadge"
-import { ConfirmDialog } from "@/components/ConfirmDialog"
+import { DeleteApplicationDialog } from "@/components/DeleteApplicationDialog"
+import { SqlAdminLaunchButton } from "@/components/SqlAdminLaunchButton"
+import { useAuth } from "@/context/AuthContext"
 
 export function ApplicationDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const isAdmin = user?.role === "Admin"
   const [application, setApplication] = useState<Application | null>(null)
   const [loading, setLoading] = useState(true)
   const [isRefreshing, setIsRefreshing] = useState(false)
@@ -108,7 +112,7 @@ export function ApplicationDetailPage() {
     if (!application) return
     try {
       await applicationsApi.remove(application.id)
-      toast.success("Aplicación eliminada.")
+      toast.success("Aplicación movida a la papelera.")
       navigate("/aplicaciones")
     } catch (err) {
       if (!(err instanceof ApiError)) toast.error("No se pudo eliminar la aplicación.")
@@ -205,12 +209,10 @@ export function ApplicationDetailPage() {
                 Iniciar
               </Button>
             )}
-            <ConfirmDialog
+            {isAdmin && <SqlAdminLaunchButton applicationId={application.id} size="default" />}
+            <DeleteApplicationDialog
               trigger={<Button variant="destructive">Borrar</Button>}
-              title="Eliminar aplicación"
-              description="Se eliminará esta aplicación de forma permanente. Esta acción no se puede deshacer."
-              confirmLabel="Eliminar"
-              destructive
+              subdomain={application.subdomain}
               onConfirm={handleDelete}
             />
           </div>

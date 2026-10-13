@@ -14,7 +14,7 @@
 #   traefik.DOMAIN    dashboard de Traefik (usuario admin)
 #   registry.DOMAIN   Docker Registry privado (usuario admin)
 #   telemetry.DOMAIN  OpenObserve (trazas, métricas y logs)
-#   nuget.DOMAIN      Nexus: repositorio de paquetes NuGet (feeds public e internal)
+#   nuget.DOMAIN      BaGetter: repositorio NuGet privado (feed en /v3/index.json)
 #   <slug>.DOMAIN     instancias de producto desplegadas desde el portal
 
 name: cenit
@@ -41,8 +41,8 @@ volumes:
     name: cenit_sqlserver_data
   openobserve_data:
     name: cenit_openobserve_data
-  nexus_data:
-    name: cenit_nexus_data
+  nuget_data:
+    name: cenit_nuget_data
   letsencrypt:
     name: cenit_letsencrypt
 
@@ -162,6 +162,22 @@ services:
       Auth__RegistrationEnabled: ${REGISTRATION_ENABLED:-false}
       # dedicated: cada app con su propio SQL Server; shared: todas en el de la plataforma.
       AppsSql__Mode: ${APPS_SQL_MODE:-dedicated}
+      # Papelera: días que pasan las instancias y los clientes borrados antes de eliminarse del todo.
+      Trash__RetentionDays: ${TRASH_RETENTION_DAYS:-7}
+      # Explorador de BBDD bajo demanda: imagen y minutos sin uso tras los que se para.
+      SqlAdmin__Image: dbeaver/cloudbeaver:${CLOUDBEAVER_VERSION:-26.2.2}
+      SqlAdmin__IdleMinutes: ${SQLADMIN_IDLE_MINUTES:-5}
+      # Feed que reciben las apps (instalación desatendida): las URLs del repositorio NuGet de la plataforma
+      # se traducen a http://cenit-nuget:8080/v3/index.json y se usa el usuario de solo lectura cenit-apps.
+      AppsSql__NugetPublicUrls: ${NUGET_PUBLIC_URL:-},http://localhost:${NUGET_LOCAL_PORT:-5100}/,${PUBLIC_SCHEME}://nuget.${DOMAIN}${PUBLIC_PORT_SUFFIX:-}/
+      AppsSql__NugetUser: cenit-apps
+      # Panel de productos: últimas versiones publicadas en el registry y en el repositorio NuGet (por la red interna).
+      Feeds__RegistryHosts: ${REGISTRY_HOST:-localhost:5000},localhost:${REGISTRY_LOCAL_PORT:-5000},registry.${DOMAIN},registry.${DOMAIN}${PUBLIC_PORT_SUFFIX:-}
+      Feeds__RegistryPublicUrl: ${PUBLIC_SCHEME}://registry.${DOMAIN}${PUBLIC_PORT_SUFFIX:-}
+      Feeds__NugetPublicUrls: ${NUGET_PUBLIC_URL:-},http://localhost:${NUGET_LOCAL_PORT:-5100}/,${PUBLIC_SCHEME}://nuget.${DOMAIN}${PUBLIC_PORT_SUFFIX:-}/
+      Feeds__User: cenit-admin
+      Feeds__Password: ${CENIT_TOKEN:-}
+      AppsSql__NugetPassword: ${NUGET_READ_TOKEN:-}
       Auth__PublicBaseUrl: ${PUBLIC_SCHEME}://cloud.${DOMAIN}${PUBLIC_PORT_SUFFIX:-}
       Smtp__Host: ${SMTP_HOST:-}
       Smtp__Port: ${SMTP_PORT:-587}
@@ -170,39 +186,93 @@ services:
       Smtp__From: ${SMTP_FROM:-}
       # Token de plataforma: autentica la API del portal (Bearer / X-Api-Key).
       ApiAuth__Tokens: ${CENIT_TOKEN:-}
-      # En local el feed NuGet no cuelga de *.localhost (localhost:5100): se pasa explícito.
-      AdminTools__NuGetUrl: ${NUGET_PUBLIC_URL:-}
+      # La web del repositorio NuGet es nuget.DOMAIN (por Traefik, con login); el feed para dotnet va aparte
+      # porque en local dotnet no resuelve *.localhost y usa localhost:5100.
+      AdminTools__NuGetFeedUrl: ${NUGET_PUBLIC_URL:-}v3/index.json
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_USER: ${ADMIN_EMAIL}
       OTEL_EXPORTER_OTLP_PASSWORD: ${ADMIN_PASSWORD}
     networks:
-      - internal
-      - proxy
+      internal:
+      proxy:
+        # Nombre fijo para el forwardAuth del explorador de BBDD (lo consulta Traefik).
+        aliases: [cenit-portal]
     labels:
       traefik.enable: "true"
       traefik.docker.network: proxy
       traefik.http.routers.app.rule: Host(`cloud.${DOMAIN}`)
+      traefik.http.routers.app.service: app
       traefik.http.services.app.loadbalancer.server.port: "8080"
+      # Explorador de BBDD (CloudBeaver, contenedor cenit-sqladmin que el portal arranca bajo demanda):
+      # la entrada con el pase del portal la atiende el portal...
+      traefik.http.routers.sqladmin-enter.rule: Host(`sqladmin.${DOMAIN}`) && PathPrefix(`/__cenit/`)
+      traefik.http.routers.sqladmin-enter.priority: "1000"
+      traefik.http.routers.sqladmin-enter.service: app
+      # ...y si el explorador está apagado (su router no existe), sqladmin.DOMINIO lleva a Cenit.
+      traefik.http.routers.sqladmin-off.rule: Host(`sqladmin.${DOMAIN}`)
+      traefik.http.routers.sqladmin-off.priority: "1"
+      traefik.http.routers.sqladmin-off.service: app
+      traefik.http.routers.sqladmin-off.middlewares: sqladmin-off
+      traefik.http.middlewares.sqladmin-off.redirectregex.regex: ^https?://[^/]+/?.*
+      traefik.http.middlewares.sqladmin-off.redirectregex.replacement: ${PUBLIC_SCHEME}://cloud.${DOMAIN}${PUBLIC_PORT_SUFFIX:-}/admin/herramientas
 
-  # Repositorio de paquetes NuGet (Nexus Repository Community Edition).
-  # Feeds: "public" (lectura anónima, escritura con usuario) e "internal"
-  # (lectura y escritura con usuario). Los crea el instalador.
-  nexus:
-    image: sonatype/nexus3:${NEXUS_VERSION:-3.96.4}
+  # Repositorio NuGet privado (BaGetter). Un único feed: http(s)://nuget.DOMAIN/v3/index.json
+  #   - Leer: usuario y contraseña (cenit-admin / CENIT_TOKEN, cenit-apps / NUGET_READ_TOKEN
+  #     de solo lectura para las aplicaciones, admin / ADMIN_PASSWORD).
+  #   - Subir y borrar: API key = CENIT_TOKEN (dotnet nuget push -k).
+  #   - Borrar elimina el paquete de verdad (HardDelete); al subir, la política de retención
+  #     borra las versiones antiguas que sobren (NUGET_RETENTION_* en .env).
+  #   - Su web pide el login de administración (Traefik); el feed lo autentica BaGetter.
+  nuget:
+    image: bagetter/bagetter:${BAGETTER_VERSION:-1.6.5}
     restart: unless-stopped
     networks:
-      - proxy
+      proxy:
+      # Las aplicaciones en modo BBDD compartida descargan de aquí sus paquetes (dacpac).
+      sql:
+        aliases: [cenit-nuget]
     ports:
       # En local los clientes NuGet (dotnet) no resuelven *.localhost: usan localhost:5100.
-      - "127.0.0.1:${NUGET_LOCAL_PORT:-5100}:8081"
+      - "127.0.0.1:${NUGET_LOCAL_PORT:-5100}:8080"
     environment:
-      INSTALL4J_ADD_VM_PARAMS: ${NEXUS_JAVA_OPTS:--Xms512m -Xmx1g -XX:MaxDirectMemorySize=1g}
+      ApiKey: ${CENIT_TOKEN:-}
+      PackageDeletionBehavior: HardDelete
+      AllowPackageOverwrites: "false"
+      Database__Type: Sqlite
+      Database__ConnectionString: Data Source=/data/db/bagetter.db
+      Storage__Type: FileSystem
+      Storage__Path: /data/packages
+      Mirror__Enabled: "false"
+      Authentication__Credentials__0__Username: cenit-admin
+      Authentication__Credentials__0__Password: ${CENIT_TOKEN:-}
+      Authentication__Credentials__1__Username: cenit-apps
+      Authentication__Credentials__1__Password: ${NUGET_READ_TOKEN:-}
+      Authentication__Credentials__2__Username: admin
+      Authentication__Credentials__2__Password: ${ADMIN_PASSWORD}
+      # Retención: versiones que se conservan por paquete (hay que definir las cuatro para que actúe).
+      Retention__MaxMajorVersions: ${NUGET_RETENTION_MAJOR:-3}
+      Retention__MaxMinorVersions: ${NUGET_RETENTION_MINOR:-5}
+      Retention__MaxPatchVersions: ${NUGET_RETENTION_PATCH:-5}
+      Retention__MaxPrereleaseVersions: ${NUGET_RETENTION_PRERELEASE:-10}
     volumes:
-      - nexus_data:/nexus-data
+      - nuget_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 10
     labels:
       traefik.enable: "true"
+      traefik.http.services.nuget.loadbalancer.server.port: "8080"
+      # Feed (/v3, /api): lo autentica BaGetter (usuario/contraseña para leer, API key para subir).
+      traefik.http.routers.nuget-feed.rule: Host(`nuget.${DOMAIN}`) && (PathPrefix(`/v3`) || PathPrefix(`/api`) || Path(`/health`))
+      traefik.http.routers.nuget-feed.priority: "100"
+      traefik.http.routers.nuget-feed.service: nuget
+      # Web (lista de paquetes): solo con el login de administración.
       traefik.http.routers.nuget.rule: Host(`nuget.${DOMAIN}`)
-      traefik.http.services.nuget.loadbalancer.server.port: "8081"
+      traefik.http.routers.nuget.service: nuget
+      traefik.http.routers.nuget.middlewares: cenit-auth
 
   openobserve:
     image: public.ecr.aws/zinclabs/openobserve:${OPENOBSERVE_VERSION:-latest}

@@ -19,6 +19,7 @@ public static class UsersEndpoints
         group.MapPut("/{id:guid}", UpdateAsync);
         group.MapPost("/{id:guid}/reset-password", ResetPasswordAsync);
         group.MapDelete("/{id:guid}", DeleteAsync);
+        group.MapPost("/{id:guid}/restore", RestoreAsync);
 
         return group;
     }
@@ -45,6 +46,7 @@ public static class UsersEndpoints
         AppDbContext db,
         IAuditLogger auditLogger,
         ISharedSqlProvisioner sharedSql,
+        IPortalSettings portalSettings,
         ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
@@ -68,10 +70,10 @@ public static class UsersEndpoints
         }
 
         var normalizedEmail = request.Email.Trim().ToLowerInvariant();
-        var emailTaken = await db.Users.AnyAsync(u => u.Email == normalizedEmail, ct);
+        var emailTaken = await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Email == normalizedEmail, ct);
         if (emailTaken)
         {
-            return Results.Conflict(new { message = "Ya existe un usuario con ese email." });
+            return Results.Conflict(new { message = "Ya existe un usuario con ese email (o está en la papelera)." });
         }
 
         var baseSlug = SlugGenerator.Slugify(request.Name);
@@ -82,7 +84,7 @@ public static class UsersEndpoints
 
         var clientSlug = await SlugGenerator.ResolveUniqueAsync(
             baseSlug,
-            slug => db.Users.AnyAsync(u => u.ClientSlug == slug, ct));
+            slug => db.Users.IgnoreQueryFilters().AnyAsync(u => u.ClientSlug == slug, ct));
 
         var user = new User
         {
@@ -96,7 +98,7 @@ public static class UsersEndpoints
 
         db.Users.Add(user);
         await db.SaveChangesAsync(ct);
-        await SharedSqlLogins.TryCreateAsync(user, db, sharedSql, loggerFactory, ct);
+        await SharedSqlLogins.TryCreateAsync(user, db, sharedSql, portalSettings, loggerFactory, ct);
         sw.Stop();
 
         await auditLogger.RecordAsync(
@@ -138,7 +140,7 @@ public static class UsersEndpoints
         var emailTaken = await db.Users.AnyAsync(u => u.Id != id && u.Email == normalizedEmail, ct);
         if (emailTaken)
         {
-            return Results.Conflict(new { message = "Ya existe un usuario con ese email." });
+            return Results.Conflict(new { message = "Ya existe un usuario con ese email (o está en la papelera)." });
         }
 
         if (user.Role == UserRole.Admin && role != UserRole.Admin)
@@ -200,13 +202,17 @@ public static class UsersEndpoints
         return Results.Ok(new { message = "Contraseña actualizada." });
     }
 
+    /// <summary>
+    /// Borrar manda al cliente a la papelera (no puede iniciar sesión) y se borra del todo, con su login SQL,
+    /// pasados los días de retención. <paramref name="purge"/> lo borra del todo ya, con sus instancias.
+    /// </summary>
     private static async Task<IResult> DeleteAsync(
         Guid id,
+        bool? purge,
         ClaimsPrincipal principal,
         AppDbContext db,
+        ITrashService trash,
         IAuditLogger auditLogger,
-        ISharedSqlProvisioner sharedSql,
-        ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
@@ -216,8 +222,8 @@ public static class UsersEndpoints
             return Results.BadRequest(new { message = "No puedes eliminar tu propio usuario." });
         }
 
-        var user = await db.Users.FindAsync([id], ct);
-        if (user is null)
+        var user = await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == id, ct);
+        if (user is null || (user.DeletedAt is not null && purge != true))
         {
             return Results.NotFound();
         }
@@ -231,8 +237,9 @@ public static class UsersEndpoints
             }
         }
 
+        // Las instancias en la papelera no cuentan: se borran con el cliente.
         var hasApplications = await db.Applications.AnyAsync(a => a.UserId == id, ct);
-        if (hasApplications)
+        if (hasApplications && purge != true)
         {
             return Results.Conflict(new
             {
@@ -240,31 +247,40 @@ public static class UsersEndpoints
             });
         }
 
-        var deletedSnapshot = new { user.Email, user.Name, Role = user.Role.ToString(), user.ClientSlug };
-
-        if (!string.IsNullOrEmpty(user.SqlLogin))
+        var snapshot = new { user.Email, user.Name, Role = user.Role.ToString(), user.ClientSlug };
+        string? error = null;
+        if (purge == true)
         {
-            try
-            {
-                await sharedSql.DropClientLoginAsync(user.SqlLogin, ct);
-            }
-            catch (Exception ex)
-            {
-                loggerFactory.CreateLogger("AhoraCenit.Users").LogWarning(ex,
-                    "No se pudo borrar el login SQL {Login} del cliente {ClientSlug}", user.SqlLogin, user.ClientSlug);
-            }
+            error = await trash.PurgeUserAsync(user, CancellationToken.None);
+        }
+        else
+        {
+            await trash.TrashUserAsync(user, ct);
         }
 
-        db.Users.Remove(user);
-        await db.SaveChangesAsync(ct);
         sw.Stop();
-
         await auditLogger.RecordAsync(
-            principal, "User", "Delete", id,
+            principal, "User", purge == true ? "Purge" : "Delete", id,
             parameters: null,
-            result: deletedSnapshot,
-            sw.Elapsed, success: true);
+            result: snapshot,
+            sw.Elapsed, success: error is null, errorMessage: error);
 
+        return error is null
+            ? Results.NoContent()
+            : Results.Json(new { message = "No se pudo borrar el usuario del todo.", error }, statusCode: StatusCodes.Status502BadGateway);
+    }
+
+    /// <summary>Saca a un cliente de la papelera.</summary>
+    private static async Task<IResult> RestoreAsync(Guid id, ClaimsPrincipal principal, AppDbContext db, ITrashService trash, IAuditLogger auditLogger, CancellationToken ct)
+    {
+        var user = await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == id && u.DeletedAt != null, ct);
+        if (user is null)
+        {
+            return Results.NotFound();
+        }
+
+        await trash.RestoreUserAsync(user, ct);
+        await auditLogger.RecordAsync(principal, "User", "Restore", id, parameters: null, result: new { user.Email, user.ClientSlug }, TimeSpan.Zero, success: true);
         return Results.NoContent();
     }
 

@@ -17,6 +17,7 @@ public static class AdminToolsEndpoints
 
     private static IResult List(
         IOptions<AdminToolsOptions> toolsOptions,
+        SqlAdminService sqlAdmin,
         IOptions<AuthOptions> authOptions,
         IConfiguration configuration)
     {
@@ -44,8 +45,21 @@ public static class AdminToolsEndpoints
             new AdminToolResponse(
                 "nuget",
                 "Repositorio NuGet",
-                "Nexus: paquetes NuGet en los feeds public (lectura anónima) e internal (solo con usuario).",
-                Resolve(tools.NuGetUrl, "nuget", baseDomain, publicBaseUrl)),
+                "BaGetter: feed NuGet privado. Leer con usuario y contraseña (cenit-admin, cenit-apps o admin); subir con el token de plataforma como API key. La web pide el login de administración.",
+                Resolve(tools.NuGetUrl, "nuget", baseDomain, publicBaseUrl),
+                string.IsNullOrWhiteSpace(tools.NuGetFeedUrl)
+                    ? Resolve(tools.NuGetUrl, "nuget", baseDomain, publicBaseUrl) + "/v3/index.json"
+                    : tools.NuGetFeedUrl.Trim()),
+            new AdminToolResponse(
+                "registry",
+                "Repositorio Docker",
+                "Registry privado de imágenes. No tiene interfaz web: el enlace abre su catálogo de imágenes (usuario admin o cenit-admin). Para subir: docker login con el usuario cenit-admin y el token de plataforma.",
+                Resolve(tools.RegistryUrl, "registry", baseDomain, publicBaseUrl) + "/v2/_catalog"),
+            new AdminToolResponse(
+                "sqladmin",
+                "Explorador de BBDD",
+                "CloudBeaver sobre el SQL Server de la plataforma: bases, tablas y consultas. Está apagado: se arranca al pulsar Explorar BBDD (también desde cada instancia, conectado a su base) y se para solo tras unos minutos sin uso.",
+                sqlAdmin.PublicUrl),
         });
     }
 

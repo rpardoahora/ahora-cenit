@@ -49,6 +49,9 @@ namespace AhoraCenit.Api.Data.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("datetime2");
+
                     b.Property<string>("EnvVarValuesJson")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
@@ -169,6 +172,9 @@ namespace AhoraCenit.Api.Data.Migrations
                         .HasColumnType("nvarchar(200)");
 
                     b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("datetime2");
 
                     b.Property<string>("Email")

@@ -39,4 +39,7 @@ public class Application
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>En la papelera desde esta fecha (parada); null si está viva. Ver <c>TrashService</c>.</summary>
+    public DateTime? DeletedAt { get; set; }
 }

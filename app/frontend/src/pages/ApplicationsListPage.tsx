@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
 import { StatusBadge } from "@/components/StatusBadge"
-import { ConfirmDialog } from "@/components/ConfirmDialog"
+import { DeleteApplicationDialog } from "@/components/DeleteApplicationDialog"
 
 export function ApplicationsListPage() {
   const { user } = useAuth()
@@ -105,7 +105,7 @@ export function ApplicationsListPage() {
     try {
       await applicationsApi.remove(app.id)
       setApplications((prev) => (prev ? prev.filter((a) => a.id !== app.id) : prev))
-      toast.success("Aplicación eliminada.")
+      toast.success("Aplicación movida a la papelera.")
     } catch (err) {
       if (!(err instanceof ApiError)) toast.error("No se pudo eliminar la aplicación.")
     }
@@ -176,16 +176,13 @@ export function ApplicationsListPage() {
                         Iniciar
                       </Button>
                     )}
-                    <ConfirmDialog
+                    <DeleteApplicationDialog
                       trigger={
                         <Button size="sm" variant="destructive">
                           Borrar
                         </Button>
                       }
-                      title="Eliminar aplicación"
-                      description={`Se eliminará "${app.subdomain}" de forma permanente. Esta acción no se puede deshacer.`}
-                      confirmLabel="Eliminar"
-                      destructive
+                      subdomain={app.subdomain}
                       onConfirm={() => handleDelete(app)}
                     />
                   </div>

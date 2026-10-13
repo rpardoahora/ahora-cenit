@@ -49,6 +49,56 @@ public static class SharedSqlComposeRewriter
     private static readonly Regex PasswordKey = new(@"(?<![A-Za-z_])(?<k>password|pwd)\s*=\s*(?<v>[^;""'\r\n]*)", RegexOptions.IgnoreCase);
     private static readonly Regex IntegratedSecurityKey = new(@"(?<![A-Za-z_])(?<k>integrated security|trusted_connection)\s*=\s*(?<v>[^;""'\r\n]*)", RegexOptions.IgnoreCase);
 
+    private static readonly Regex VariableReference = new(@"\$\{(?<name>[A-Za-z_][A-Za-z0-9_]*)(:?[-?][^}]*)?\}");
+
+    /// <summary>
+    /// Variables (${VAR}) que usan los servicios SQL del compose: en modo BBDD compartida esos servicios se
+    /// desactivan, así que sus variables (la contraseña de sa, la edición...) ni se piden ni se guardan.
+    /// </summary>
+    public static IReadOnlySet<string> SqlServiceVariables(string compose)
+    {
+        var lines = compose.Replace("\r\n", "\n").Split('\n').ToList();
+        var servicesLine = FindTopLevel(lines, "services");
+        if (servicesLine < 0)
+        {
+            return new HashSet<string>();
+        }
+
+        return ReadChildren(lines, servicesLine)
+            .Where(IsSqlService)
+            .SelectMany(s => s.Lines.Where(l => !IsBlankOrComment(l)))
+            .SelectMany(l => VariableReference.Matches(l).Select(m => m.Groups["name"].Value))
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// Fija variables de entorno en los servicios del compose que cumplan <paramref name="appliesTo"/> (recibe
+    /// sus líneas sin comentarios), sin tocar nada más. Devuelve el compose y los servicios modificados.
+    /// </summary>
+    public static (string Compose, IReadOnlyList<string> Services) SetServiceEnvironment(
+        string compose, Func<IReadOnlyList<string>, bool> appliesTo, IReadOnlyDictionary<string, Func<string?, string?>> environment)
+    {
+        var lines = compose.Replace("\r\n", "\n").Split('\n').ToList();
+        var servicesLine = FindTopLevel(lines, "services");
+        if (servicesLine < 0)
+        {
+            return (compose, []);
+        }
+
+        var edits = new Edits(lines);
+        var changed = new List<string>();
+        foreach (var service in ReadChildren(lines, servicesLine))
+        {
+            if (appliesTo(service.Lines.Where(l => !IsBlankOrComment(l)).ToList()))
+            {
+                SetEnvironment(lines, edits, service, environment);
+                changed.Add(service.Name);
+            }
+        }
+
+        return changed.Count == 0 ? (compose, changed) : (edits.Apply(), changed);
+    }
+
     /// <summary>Prefijo de las bases de datos de una instancia: su subdominio con '_' en vez de '-'.</summary>
     public static string DatabasePrefix(string subdomain) => subdomain.Replace('-', '_');
 
@@ -58,8 +108,13 @@ public static class SharedSqlComposeRewriter
     /// <param name="passwordValue">Valor para Password (normalmente una ${VARIABLE} que rellena el portal).</param>
     /// <param name="host">Host del SQL Server común.</param>
     /// <param name="network">Red Docker externa en la que está el SQL Server común.</param>
+    /// <param name="environment">
+    /// Variables de entorno para los servicios cuyas cadenas se han reescrito. Cada función recibe el
+    /// valor actual (null si el servicio no la define) y devuelve el nuevo, o null para no tocarla.
+    /// </param>
     public static SharedSqlRewriteResult Rewrite(
-        string compose, string databasePrefix, string userValue, string passwordValue, string host, string network)
+        string compose, string databasePrefix, string userValue, string passwordValue, string host, string network,
+        IReadOnlyDictionary<string, Func<string?, string?>>? environment = null)
     {
         var lines = compose.Replace("\r\n", "\n").Split('\n').ToList();
         var edits = new Edits(lines);
@@ -130,10 +185,15 @@ public static class SharedSqlComposeRewriter
                 }
             }
 
-            // 4. Los servicios que ahora usan el SQL común necesitan su red.
+            // 4. Los servicios que ahora usan el SQL común necesitan su red (y las variables pedidas).
             if (serviceRewritten)
             {
                 rewritten.Add(service.Name);
+                if (environment is { Count: > 0 })
+                {
+                    SetEnvironment(lines, edits, service, environment);
+                }
+
                 AddServiceNetwork(lines, edits, service, network);
             }
         }
@@ -272,6 +332,67 @@ public static class SharedSqlComposeRewriter
         {
             edits.Comment(parentLine, parentLine + 1);
         }
+    }
+
+    private static readonly Regex EnvListEntry = new(@"^(?<indent>\s*)-\s*(?<q>[""']?)(?<key>[A-Za-z_][A-Za-z0-9_.]*)=(?<value>.*?)\k<q>\s*$");
+    private static readonly Regex EnvMapEntry = new(@"^(?<indent>\s*)(?<key>[A-Za-z_][A-Za-z0-9_.]*)\s*:\s*(?<value>.*?)\s*$");
+
+    private static void SetEnvironment(List<string> lines, Edits edits, Entry service, IReadOnlyDictionary<string, Func<string?, string?>> environment)
+    {
+        var childIndent = Spaces(service.ChildIndent);
+        var envLine = FindKey(lines, service, "environment");
+        if (envLine < 0)
+        {
+            var added = environment
+                .Select(kv => (kv.Key, Value: kv.Value(null)))
+                .Where(e => e.Value is not null)
+                .Select(e => $"{childIndent}  {e.Key}: {Quote(e.Value!)}")
+                .ToList();
+            if (added.Count > 0)
+            {
+                edits.Insert(service.End, [$"{childIndent}environment:", .. added]);
+            }
+
+            return;
+        }
+
+        var entries = ReadChildren(lines, envLine);
+        var isList = entries.Count > 0 && lines[entries[0].Start].TrimStart().StartsWith('-');
+        var itemIndent = entries.Count > 0 ? Spaces(entries[0].Indent) : childIndent + "  ";
+        var appendAt = entries.Count > 0 ? entries[^1].End : envLine + 1;
+
+        foreach (var (key, resolve) in environment)
+        {
+            var existing = entries.FirstOrDefault(e => e.Name == key || e.Name.StartsWith(key + "=", StringComparison.Ordinal));
+            if (existing is not null && !edits.IsCommented(existing.Start))
+            {
+                var line = lines[existing.Start];
+                var match = isList ? EnvListEntry.Match(line) : EnvMapEntry.Match(line);
+                var current = match.Success ? Unquote(match.Groups["value"].Value) : null;
+                var value = resolve(current);
+                if (value is not null && value != current)
+                {
+                    edits.Insert(existing.Start, $"{itemIndent}# {Marker} original: {line.Trim()}");
+                    edits.Replace(existing.Start, isList ? $"{itemIndent}- {Quote($"{key}={value}")}" : $"{itemIndent}{key}: {Quote(value)}");
+                }
+
+                continue;
+            }
+
+            var newValue = resolve(null);
+            if (newValue is not null)
+            {
+                edits.Insert(appendAt, isList ? $"{itemIndent}- {Quote($"{key}={newValue}")}" : $"{itemIndent}{key}: {Quote(newValue)}");
+            }
+        }
+    }
+
+    private static string Quote(string value) => $"\"{value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"";
+
+    private static string Unquote(string value)
+    {
+        var trimmed = value.Trim();
+        return trimmed.Length >= 2 && trimmed[0] == trimmed[^1] && trimmed[0] is '"' or '\'' ? trimmed[1..^1] : trimmed;
     }
 
     private static void AddServiceNetwork(List<string> lines, Edits edits, Entry service, string network)

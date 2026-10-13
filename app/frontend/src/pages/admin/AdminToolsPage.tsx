@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
+import { SqlAdminLaunchButton } from "@/components/SqlAdminLaunchButton"
 
 export function AdminToolsPage() {
   const [tools, setTools] = useState<AdminTool[] | null>(null)
@@ -75,17 +76,33 @@ export function AdminToolsPage() {
                 >
                   {tool.url}
                 </a>
+                {tool.feedUrl && (
+                  <div className="mt-3 flex flex-col gap-1">
+                    <span className="text-xs font-medium">Feed (dotnet / NuGet)</span>
+                    <code className="font-mono text-xs break-all text-muted-foreground">{tool.feedUrl}</code>
+                  </div>
+                )}
               </CardContent>
               <CardFooter className="gap-2">
-                <Button
-                  size="sm"
-                  render={<a href={tool.url} target="_blank" rel="noopener noreferrer" />}
-                >
-                  Abrir
-                </Button>
+                {tool.key === "sqladmin" ? (
+                  // Apagado por defecto: se arranca (y conecta al SQL de la plataforma) desde aquí.
+                  <SqlAdminLaunchButton variant="default" />
+                ) : (
+                  <Button
+                    size="sm"
+                    render={<a href={tool.url} target="_blank" rel="noopener noreferrer" />}
+                  >
+                    Abrir
+                  </Button>
+                )}
                 <Button size="sm" variant="outline" onClick={() => copyUrl(tool.url)}>
                   Copiar URL
                 </Button>
+                {tool.feedUrl && (
+                  <Button size="sm" variant="outline" onClick={() => copyUrl(tool.feedUrl!)}>
+                    Copiar feed
+                  </Button>
+                )}
               </CardFooter>
             </Card>
           ))}

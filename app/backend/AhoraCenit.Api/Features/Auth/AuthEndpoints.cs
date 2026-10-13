@@ -50,7 +50,7 @@ public static class AuthEndpoints
 
         var normalizedEmail = request.Email.Trim().ToLowerInvariant();
 
-        var emailTaken = await db.Users.AnyAsync(u => u.Email == normalizedEmail, ct);
+        var emailTaken = await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Email == normalizedEmail, ct);
         if (emailTaken)
         {
             return Results.Conflict(new { message = "Ya existe un usuario con ese email." });
@@ -64,7 +64,7 @@ public static class AuthEndpoints
 
         var clientSlug = await SlugGenerator.ResolveUniqueAsync(
             baseSlug,
-            slug => db.Users.AnyAsync(u => u.ClientSlug == slug, ct));
+            slug => db.Users.IgnoreQueryFilters().AnyAsync(u => u.ClientSlug == slug, ct));
 
         var options = authOptions.Value;
         var requiresConfirmation = options.RequireEmailConfirmation;
@@ -87,7 +87,7 @@ public static class AuthEndpoints
 
         db.Users.Add(user);
         await db.SaveChangesAsync(ct);
-        await SharedSqlLogins.TryCreateAsync(user, db, sharedSql, loggerFactory, ct);
+        await SharedSqlLogins.TryCreateAsync(user, db, sharedSql, portalSettings, loggerFactory, ct);
 
         if (requiresConfirmation)
         {

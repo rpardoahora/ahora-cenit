@@ -161,7 +161,11 @@ export function ProductsListPage() {
           <TableBody>
             {products.map((product) => (
               <TableRow key={product.id}>
-                <TableCell className="font-medium">{product.name}</TableCell>
+                <TableCell className="font-medium">
+                  <Link to={`/admin/productos/${product.id}`} className="hover:underline">
+                    {product.name}
+                  </Link>
+                </TableCell>
                 <TableCell>
                   <Badge variant={product.isActive ? "default" : "secondary"}>
                     {product.isActive ? "Activo" : "Inactivo"}
@@ -175,6 +179,9 @@ export function ProductsListPage() {
                 </TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-1.5">
+                    <Button size="sm" variant="outline" render={<Link to={`/admin/productos/${product.id}`} />}>
+                      Panel
+                    </Button>
                     <Button
                       size="sm"
                       variant="outline"

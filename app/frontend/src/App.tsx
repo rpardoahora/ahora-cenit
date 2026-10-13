@@ -17,6 +17,8 @@ import { UsersListPage } from "@/pages/admin/UsersListPage"
 import { UserFormPage } from "@/pages/admin/UserFormPage"
 import { UsageDashboardPage } from "@/pages/admin/UsageDashboardPage"
 import { AdminToolsPage } from "@/pages/admin/AdminToolsPage"
+import { ProductOverviewPage } from "@/pages/admin/ProductOverviewPage"
+import { TrashPage } from "@/pages/admin/TrashPage"
 import { AdminSettingsPage } from "@/pages/admin/AdminSettingsPage"
 import { ConfigProvider } from "@/context/ConfigContext"
 import { ForgotPasswordPage } from "@/pages/ForgotPasswordPage"
@@ -49,12 +51,14 @@ function App() {
                 <Route path="productos" element={<ProductsListPage />} />
                 <Route path="productos/nuevo" element={<ProductFormPage />} />
                 <Route path="productos/:id/editar" element={<ProductFormPage />} />
+                <Route path="productos/:id" element={<ProductOverviewPage />} />
                 <Route path="usuarios" element={<UsersListPage />} />
                 <Route path="usuarios/nuevo" element={<UserFormPage />} />
                 <Route path="usuarios/:id/editar" element={<UserFormPage />} />
                 <Route path="consumo" element={<UsageDashboardPage />} />
                 <Route path="herramientas" element={<AdminToolsPage />} />
                 <Route path="ajustes" element={<AdminSettingsPage />} />
+                <Route path="papelera" element={<TrashPage />} />
               </Route>
             </Route>
           </Route>

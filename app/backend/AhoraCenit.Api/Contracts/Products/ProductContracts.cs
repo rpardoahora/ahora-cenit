@@ -37,7 +37,8 @@ public record ProductResponse(
     List<EnvVarDefinitionDto> EnvVarsSchema,
     bool IsActive,
     DateTime CreatedAt,
-    DateTime UpdatedAt);
+    DateTime UpdatedAt,
+    IReadOnlyList<string> SharedSqlHiddenEnvVars);
 
 /// <summary>Un producto tal y como viaja en el fichero de export/import (sin Id/CreatedAt/UpdatedAt: se regeneran al importar).</summary>
 public record ProductExportDto(

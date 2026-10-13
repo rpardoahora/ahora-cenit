@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using AhoraCenit.Api.Data;
 using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Options;
 
 namespace AhoraCenit.Api.Services;
 
@@ -13,8 +12,6 @@ namespace AhoraCenit.Api.Services;
 /// </summary>
 public interface ISharedSqlProvisioner
 {
-    bool Enabled { get; }
-
     /// <summary>
     /// Asigna al cliente su login SQL si aún no lo tiene (el llamador guarda el
     /// usuario) y lo crea o sincroniza en el SQL Server común.
@@ -28,12 +25,10 @@ public interface ISharedSqlProvisioner
     Task DropClientLoginAsync(string login, CancellationToken ct = default);
 }
 
-public class SharedSqlProvisioner(IConfiguration configuration, IOptions<AppsSqlOptions> options) : ISharedSqlProvisioner
+public class SharedSqlProvisioner(IConfiguration configuration) : ISharedSqlProvisioner
 {
     // Sin ';', '=' ni comillas: la contraseña va dentro de una cadena de conexión y de un .env.
     private const string PasswordAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
-
-    public bool Enabled => options.Value.Mode == AppsSqlMode.Shared;
 
     public async Task EnsureClientLoginAsync(User client, CancellationToken ct = default)
     {
@@ -142,9 +137,9 @@ public static class SharedSqlLogins
     /// no se bloquea el alta: se vuelve a intentar en su primer despliegue.
     /// </summary>
     public static async Task TryCreateAsync(
-        User user, AppDbContext db, ISharedSqlProvisioner sharedSql, ILoggerFactory loggerFactory, CancellationToken ct)
+        User user, AppDbContext db, ISharedSqlProvisioner sharedSql, IPortalSettings settings, ILoggerFactory loggerFactory, CancellationToken ct)
     {
-        if (!sharedSql.Enabled || user.Role != UserRole.Cliente)
+        if (user.Role != UserRole.Cliente || await settings.GetAppsSqlModeAsync(ct) != AppsSqlMode.Shared)
         {
             return;
         }

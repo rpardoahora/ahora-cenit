@@ -19,6 +19,7 @@ public static class ProductsEndpoints
         group.MapGet("/{id:guid}", GetByIdAsync).AllowAnonymous();
         group.MapGet("/{id:guid}/suggest-subdomain", SuggestSubdomainAsync).RequireAuthorization();
         group.MapGet("/{id:guid}/deploy-stats", GetDeployStatsAsync).RequireAuthorization();
+        group.MapGet("/{id:guid}/overview", ProductOverviewEndpoint.GetAsync).RequireAuthorization("AdminOnly");
         group.MapPost("/", CreateAsync).RequireAuthorization("AdminOnly");
         group.MapPut("/{id:guid}", UpdateAsync).RequireAuthorization("AdminOnly");
         group.MapPatch("/{id:guid}/active", SetActiveAsync).RequireAuthorization("AdminOnly");
@@ -92,7 +93,7 @@ public static class ProductsEndpoints
         var baseSlug = SlugGenerator.Slugify(product.Name, user.Name);
         var suggested = await SlugGenerator.ResolveUniqueAsync(
             baseSlug,
-            slug => db.Applications.AnyAsync(a => a.Subdomain == slug, ct));
+            slug => db.Applications.IgnoreQueryFilters().AnyAsync(a => a.Subdomain == slug, ct));
 
         return Results.Ok(new SuggestSubdomainResponse(suggested));
     }
@@ -251,12 +252,12 @@ public static class ProductsEndpoints
             return Results.NotFound();
         }
 
-        var hasApplications = await db.Applications.AnyAsync(a => a.ProductId == id, ct);
+        var hasApplications = await db.Applications.IgnoreQueryFilters().AnyAsync(a => a.ProductId == id, ct);
         if (hasApplications)
         {
             return Results.Conflict(new
             {
-                message = "No se puede borrar el producto porque tiene aplicaciones (instancias) desplegadas."
+                message = "No se puede borrar el producto porque tiene aplicaciones (instancias) desplegadas o en la papelera."
             });
         }
 
@@ -492,6 +493,8 @@ public static class ProductsEndpoints
             schema,
             product.IsActive,
             product.CreatedAt,
-            product.UpdatedAt);
+            product.UpdatedAt,
+            // Variables que el formulario de despliegue no pide en modo BBDD compartida.
+            SharedSqlComposeRewriter.SqlServiceVariables(product.ComposeTemplate).Order().ToList());
     }
 }

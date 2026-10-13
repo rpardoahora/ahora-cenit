@@ -38,5 +38,8 @@ public class User
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+    /// <summary>En la papelera desde esta fecha (no puede iniciar sesión); null si está activo.</summary>
+    public DateTime? DeletedAt { get; set; }
+
     public ICollection<Application> Applications { get; set; } = new List<Application>();
 }

@@ -14,12 +14,16 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
     public DbSet<AppSetting> AppSettings => Set<AppSetting>();
 
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
 
         modelBuilder.Entity<User>(entity =>
         {
+            // Los clientes en la papelera no existen para el resto del portal (login, listados...);
+            // la papelera y las comprobaciones de email/slug ocupados usan IgnoreQueryFilters.
+            entity.HasQueryFilter(u => u.DeletedAt == null);
             entity.HasIndex(u => u.Email).IsUnique();
             entity.HasIndex(u => u.ClientSlug).IsUnique();
             entity.Property(u => u.Email).HasMaxLength(256).IsRequired();
@@ -41,6 +45,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
         modelBuilder.Entity<Application>(entity =>
         {
+            // Las instancias en la papelera tampoco (ver TrashService).
+            entity.HasQueryFilter(a => a.DeletedAt == null);
             entity.HasIndex(a => a.Subdomain).IsUnique();
             entity.Property(a => a.Subdomain).HasMaxLength(255).IsRequired();
             entity.Property(a => a.EnvVarValuesJson)

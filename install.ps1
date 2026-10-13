@@ -32,8 +32,9 @@ $BackupRoot = Join-Path $ScriptRoot 'backups'
 $HtpasswdImage  = 'httpd:2.4-alpine'
 $HelperImage    = 'alpine:3.20'
 $AdminUser      = 'admin'
-$PlatformUser   = 'cenit-admin'   # usuario de automatizacion (token de plataforma): registry y Nexus
-$Volumes        = @('cenit_sqlserver_data', 'cenit_portainer_data', 'cenit_registry_data', 'cenit_openobserve_data', 'cenit_nexus_data', 'cenit_letsencrypt')
+$PlatformUser   = 'cenit-admin'   # usuario de automatizacion (token de plataforma): registry y repositorio NuGet
+$AppsNugetUser  = 'cenit-apps'    # usuario de solo lectura del repositorio NuGet para las aplicaciones (NUGET_READ_TOKEN)
+$Volumes        = @('cenit_sqlserver_data', 'cenit_portainer_data', 'cenit_registry_data', 'cenit_openobserve_data', 'cenit_nuget_data', 'cenit_letsencrypt')
 $LegacyContainers = @('traefik', 'portainer', 'app', 'sqlserver', 'openobserve')
 $DockerDesktopUrl = 'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe'
 
@@ -45,9 +46,10 @@ $WslRepoPath  = '/opt/ahora-cenit'
 $BootTaskName = 'AhoraCenit-WSL'
 
 $EnvKeys = @('CENIT_MODE', 'DOMAIN', 'PUBLIC_SCHEME', 'HTTP_PORT', 'PUBLIC_PORT_SUFFIX', 'COMPOSE_FILE', 'COMPOSE_PATH_SEPARATOR', 'ACME_EMAIL',
-    'ADMIN_EMAIL', 'ADMIN_PASSWORD', 'DB_SA_PASSWORD', 'MSSQL_PID', 'APPS_SQL_MODE', 'JWT_SECRET', 'APP_IMAGE', 'APP_VERSION',
+    'ADMIN_EMAIL', 'ADMIN_PASSWORD', 'DB_SA_PASSWORD', 'MSSQL_PID', 'APPS_SQL_MODE', 'TRASH_RETENTION_DAYS', 'JWT_SECRET', 'APP_IMAGE', 'APP_VERSION',
     'PORTAINER_API_KEY', 'PORTAINER_ENDPOINT_ID', 'PORTAINER_LOCAL_PORT', 'REGISTRY_HOST', 'REGISTRY_LOCAL_PORT',
-    'NUGET_PUBLIC_URL', 'NUGET_LOCAL_PORT', 'CENIT_TOKEN',
+    'NUGET_PUBLIC_URL', 'NUGET_LOCAL_PORT', 'CENIT_TOKEN', 'NUGET_READ_TOKEN',
+    'NUGET_RETENTION_MAJOR', 'NUGET_RETENTION_MINOR', 'NUGET_RETENTION_PATCH', 'NUGET_RETENTION_PRERELEASE',
     'REGISTRATION_ENABLED', 'REQUIRE_EMAIL_CONFIRMATION', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASSWORD', 'SMTP_FROM',
     'OTEL_EXPORTER_OTLP_ENDPOINT')
 
@@ -278,6 +280,12 @@ function Set-Defaults {
         if (Test-Path (Join-Path $AuthDir 'htpasswd')) { $script:TokenChanged = $true }
     }
     if ($script:Cfg.Contains('NUGET_TOKEN')) { $script:Cfg.Remove('NUGET_TOKEN') }
+    Set-CfgDefault 'NUGET_READ_TOKEN' ('cenit_read_' + (New-RandomString 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789' 40))
+    # Politica de retencion del repositorio NuGet: versiones que se conservan de cada paquete.
+    Set-CfgDefault 'NUGET_RETENTION_MAJOR' '3'
+    Set-CfgDefault 'NUGET_RETENTION_MINOR' '5'
+    Set-CfgDefault 'NUGET_RETENTION_PATCH' '5'
+    Set-CfgDefault 'NUGET_RETENTION_PRERELEASE' '10'
     if ((Get-Cfg 'CENIT_MODE') -eq 'production') { $script:Cfg['NUGET_PUBLIC_URL'] = "https://nuget.$(Get-Cfg 'DOMAIN')/" }
     else { $script:Cfg['NUGET_PUBLIC_URL'] = "http://localhost:$(Get-Cfg 'NUGET_LOCAL_PORT')/" }
     $script:Cfg['COMPOSE_PATH_SEPARATOR'] = ':'
@@ -285,6 +293,7 @@ function Set-Defaults {
     Set-CfgDefault 'DB_SA_PASSWORD' (New-Secret 32)
     Set-CfgDefault 'MSSQL_PID' 'Express'
     Set-CfgDefault 'APPS_SQL_MODE' 'dedicated'
+    Set-CfgDefault 'TRASH_RETENTION_DAYS' '7'
     Set-CfgDefault 'JWT_SECRET' (New-Secret 64)
     Set-CfgDefault 'APP_IMAGE' 'ghcr.io/rpardoahora/ahora-cenit'
     Set-CfgDefault 'APP_VERSION' 'latest'
@@ -305,10 +314,12 @@ function Export-EnvFile {
         'ADMIN_EMAIL'                 = @('', '# --- Administrador: portal, Portainer, Traefik, registry y OpenObserve ---')
         'DB_SA_PASSWORD'              = @('', '# --- Secretos internos (generados automaticamente) ---')
         'MSSQL_PID'                   = @('# Edicion de SQL Server: Express (gratis, apta para produccion), Developer (solo pruebas) o Standard/Enterprise/clave con licencia.')
-        'APPS_SQL_MODE'               = @('# SQL Server de las aplicaciones: dedicated (cada una con su imagen SQL) o shared (todas en el de la plataforma, un login por cliente). Solo afecta a los despliegues nuevos.')
+        'TRASH_RETENTION_DAYS'        = @('# Papelera: dias que pasan las instancias y los clientes borrados (parados) antes de eliminarse del todo con sus datos.')
+        'APPS_SQL_MODE'               = @('# SQL Server de las aplicaciones: dedicated (cada una con su imagen SQL) o shared (todas en el de la plataforma, un login por cliente). Valor inicial: despues se cambia en Administracion > Ajustes del portal.')
         'APP_IMAGE'                   = @('', '# --- Imagen del portal (APP_VERSION: latest o sha-<commit> / v<version>) ---')
         'PORTAINER_API_KEY'           = @('', '# --- Portainer / registry (rellenado por el instalador) ---')
-        'NUGET_PUBLIC_URL'            = @('', "# --- NuGet (Nexus) y token de plataforma. CENIT_TOKEN es la contrasena del usuario ${PlatformUser}: vale para la API del portal, docker login y NuGet ---")
+        'NUGET_PUBLIC_URL'            = @('', "# --- Repositorio NuGet (BaGetter, feed privado en <NUGET_PUBLIC_URL>v3/index.json) y token de plataforma. CENIT_TOKEN: API del portal, docker login, leer NuGet (usuario ${PlatformUser}) y subir paquetes (API key) ---")
+        'NUGET_RETENTION_MAJOR'       = @('# Retencion NuGet: versiones que se conservan de cada paquete (mayores, menores, parches y prereleases); al subir se borran las que sobren.')
         'REGISTRATION_ENABLED'        = @('', '# --- Registro de usuarios externos (valor inicial: despues manda Administracion > Ajustes del portal) ---')
         'REQUIRE_EMAIL_CONFIRMATION'  = @('# --- Emails (SMTP vacio = los emails solo se escriben en el log) ---')
         'OTEL_EXPORTER_OTLP_ENDPOINT' = @('', '# --- Telemetria (vacio = no exportar a OpenObserve) ---')
@@ -420,7 +431,7 @@ function Confirm-System {
     }
     $memGb = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
     if ($memGb -lt 8) {
-        Write-Warn "El equipo tiene $memGb GB de RAM. Con Docker Desktop, SQL Server y Nexus se recomiendan al menos 8 GB."
+        Write-Warn "El equipo tiene $memGb GB de RAM. Con Docker Desktop y SQL Server se recomiendan al menos 8 GB."
         if (-not (Read-YesNo "Continuar de todos modos?" $false)) { exit 1 }
     } else { Write-Ok "Memoria: $memGb GB" }
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
@@ -656,7 +667,7 @@ function Read-Configuration {
     }
 
     Write-Host ""
-    Write-Info "SQL Server de las aplicaciones que se desplieguen:"
+    Write-Info "SQL Server de las aplicaciones que se desplieguen (valor inicial; despues se cambia en Administracion > Ajustes):"
     $sqlDefault = if ((Get-Cfg 'APPS_SQL_MODE') -eq 'shared') { 2 } else { 1 }
     $sqlChoice = Read-Choice "Un SQL Server por aplicacion o un motor comun?" @(
         'Uno por aplicacion: cada app usa la imagen SQL que traiga su compose',
@@ -732,7 +743,7 @@ function Invoke-JsonApi([string]$Uri, [string]$Method, [hashtable]$Headers, $Bod
         $r = Invoke-WebRequest @params
         $status = [int]$r.StatusCode
         # Windows PowerShell 5.1 decodifica como ISO-8859-1 las respuestas JSON sin charset: forzamos UTF-8
-        # (si no, los textos con acentos o comillas tipograficas, como el EULA de Nexus, llegan alterados).
+        # (si no, los textos con acentos o comillas tipograficas llegan alterados).
         $raw = [Text.Encoding]::UTF8.GetString($r.RawContentStream.ToArray())
     } catch {
         $resp = $_.Exception.Response
@@ -838,6 +849,8 @@ function Set-PortainerConfiguration {
     $regUrl = Get-Cfg 'REGISTRY_HOST'
     $body = @{ Name = 'ahora-cenit'; Type = 3; URL = $regUrl; BaseURL = ''; Authentication = $true; Username = $AdminUser; Password = (Get-Cfg 'ADMIN_PASSWORD') }
     $existing = @((Invoke-Portainer GET '/api/registries').Json | Where-Object { $_.Name -eq 'ahora-cenit' })
+    # Una instalacion interrumpida puede haber dejado duplicados: con dos del mismo nombre el PUT da 409.
+    foreach ($extra in ($existing | Select-Object -Skip 1)) { Invoke-Portainer DELETE "/api/registries/$($extra.Id)" | Out-Null }
     if ($existing.Count -gt 0) { $r = Invoke-Portainer PUT "/api/registries/$($existing[0].Id)" $body }
     else { $r = Invoke-Portainer POST '/api/registries' $body }
     if ($r.Status -lt 200 -or $r.Status -ge 300) { Stop-WithError "No se pudo registrar el registry en Portainer (HTTP $($r.Status)): $($r.Raw)" }
@@ -847,106 +860,23 @@ function Set-PortainerConfiguration {
 }
 
 # ----------------------------------------------------------------------------
-# Nexus Repository CE (NuGet): admin, EULA, feeds public/internal y usuario de automatizacion
+# Repositorio NuGet (BaGetter): se configura entero por variables de entorno
+# (feed privado, API key, borrado definitivo y retencion); solo hay que esperarlo.
 # ----------------------------------------------------------------------------
-$script:NxAuth = @{}
-$NexusEulaUrl = 'https://links.sonatype.com/products/nxrm/ce-eula'
-
-function Set-NexusCredentials([string]$User, [string]$Password) {
-    $basic = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${User}:$Password"))
-    $script:NxAuth = @{ Authorization = "Basic $basic" }
-}
-
-function Invoke-Nexus([string]$Method, [string]$Path, $Body = $null, [string]$Raw = '') {
-    return (Invoke-JsonApi "http://127.0.0.1:$(Get-Cfg 'NUGET_LOCAL_PORT')/service/rest/v1$Path" $Method $script:NxAuth $Body '' $Raw 'text/plain')
-}
-
-function Set-NexusConfiguration {
-    Write-Section "Configurando el repositorio NuGet (Nexus)"
-    Write-Info "Esperando a que Nexus arranque (la primera vez tarda 1-3 minutos)..."
+function Wait-Nuget {
+    Write-Section "Repositorio NuGet (BaGetter)"
+    $port = Get-Cfg 'NUGET_LOCAL_PORT'
     $ready = $false
-    for ($i = 0; $i -lt 120; $i++) {
-        $code = Invoke-Native { curl.exe -s -o NUL -w '%{http_code}' --max-time 5 "http://127.0.0.1:$(Get-Cfg 'NUGET_LOCAL_PORT')/service/rest/v1/status/writable" }
+    for ($i = 0; $i -lt 60; $i++) {
+        $code = Invoke-Native { curl.exe -s -o NUL -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/health" }
         if ("$code".Trim() -eq '200') { $ready = $true; break }
-        Start-Sleep -Seconds 3
+        Start-Sleep -Seconds 2
     }
-    if (-not $ready) { Stop-WithError "Nexus no arranca. Mira: cd infra; docker compose logs nexus" }
-
-    # Contrasena de admin: la misma que el resto. Nexus arranca con una aleatoria en /nexus-data/admin.password.
-    Set-NexusCredentials 'admin' (Get-Cfg 'ADMIN_PASSWORD')
-    if ((Invoke-Nexus GET '/security/anonymous').Status -ne 200) {
-        Push-Location $InfraDir
-        try { $init = (Invoke-Native { docker compose exec -T nexus cat /nexus-data/admin.password 2>$null }) -join '' } finally { Pop-Location }
-        $init = "$init".Trim()
-        if (-not $init) {
-            Write-Warn "No se pudo entrar en Nexus como admin (se cambio su contrasena?). Configuralo desde su panel."
-            return
-        }
-        Set-NexusCredentials 'admin' $init
-        $r = Invoke-Nexus PUT '/security/users/admin/change-password' $null (Get-Cfg 'ADMIN_PASSWORD')
-        if ($r.Status -lt 200 -or $r.Status -ge 300) { Stop-WithError "No se pudo fijar la contrasena de admin de Nexus (HTTP $($r.Status)): $($r.Raw)" }
-        Set-NexusCredentials 'admin' (Get-Cfg 'ADMIN_PASSWORD')
-        Write-Ok "Contrasena de administrador de Nexus fijada"
-    }
-
-    # Sin aceptar el EULA de la edicion Community, Nexus no deja subir ni bajar paquetes.
-    $eula = Invoke-Nexus GET '/system/eula'
-    if ($eula.Json -and -not $eula.Json.accepted) {
-        Write-Host "  Nexus Repository Community Edition se rige por el EULA de Sonatype: $NexusEulaUrl"
-        Write-Host "  (edicion gratuita con limites: 40.000 componentes y 100.000 peticiones al dia)."
-        if (Read-YesNo "Aceptas ese EULA?" $true) {
-            $eula.Json.accepted = $true
-            $r = Invoke-Nexus POST '/system/eula' $eula.Json
-            if ($r.Status -lt 200 -or $r.Status -ge 300) { Stop-WithError "No se pudo aceptar el EULA de Nexus (HTTP $($r.Status)): $($r.Raw)" }
-            Write-Ok "EULA de Nexus Community Edition aceptado"
-        } else {
-            Write-Warn "Sin aceptar el EULA, Nexus no permitira subir ni descargar paquetes hasta que lo aceptes desde su panel."
-        }
-    }
-
-    # Feeds: internal (lectura y escritura con login) y public (lectura anonima, escritura con login).
-    foreach ($repo in 'internal', 'public') {
-        if ((Invoke-Nexus GET "/repositories/$repo").Status -ne 200) {
-            $r = Invoke-Nexus POST '/repositories/nuget/hosted' @{
-                name = $repo; online = $true
-                storage = @{ blobStoreName = 'default'; strictContentTypeValidation = $true; writePolicy = 'allow' }
-            }
-            if ($r.Status -lt 200 -or $r.Status -ge 300) { Stop-WithError "No se pudo crear el feed '$repo' en Nexus (HTTP $($r.Status)): $($r.Raw)" }
-        }
-        Write-Ok "Feed NuGet '$repo'"
-    }
-
-    # Acceso anonimo limitado a LEER el feed public. Solo la primera vez (marca: existe el rol public-read).
-    if ((Invoke-Nexus GET '/security/roles/public-read').Status -ne 200) {
-        $r = Invoke-Nexus POST '/security/roles' @{
-            id = 'public-read'; name = 'public-read'; description = 'Lectura anonima del feed public'
-            privileges = @('nx-repository-view-nuget-public-read', 'nx-repository-view-nuget-public-browse'); roles = @()
-        }
-        if ($r.Status -lt 200 -or $r.Status -ge 300) { Stop-WithError "No se pudo crear el rol public-read en Nexus (HTTP $($r.Status)): $($r.Raw)" }
-        Invoke-Nexus PUT '/security/users/anonymous' @{
-            userId = 'anonymous'; firstName = 'Anonymous'; lastName = 'User'; emailAddress = 'anonymous@example.org'
-            source = 'default'; status = 'active'; roles = @('public-read')
-        } | Out-Null
-        Invoke-Nexus PUT '/security/anonymous' @{ enabled = $true; userId = 'anonymous'; realmName = 'NexusAuthorizingRealm' } | Out-Null
-        # Repositorios de ejemplo (maven, nuget) que trae Nexus: no hacen falta.
-        foreach ($d in 'maven-releases', 'maven-snapshots', 'maven-central', 'maven-public', 'nuget-hosted', 'nuget.org-proxy', 'nuget-group') {
-            Invoke-Nexus DELETE "/repositories/$d" | Out-Null
-        }
-        Write-Ok "Acceso anonimo: solo lectura del feed public"
-    }
-
-    # Usuario de automatizacion: cenit-admin, con el token de plataforma como contrasena.
-    $found = Invoke-Nexus GET "/security/users?userId=$PlatformUser"
-    if (@($found.Json).Count -gt 0) {
-        Invoke-Nexus PUT "/security/users/$PlatformUser/change-password" $null (Get-Cfg 'CENIT_TOKEN') | Out-Null
-    } else {
-        $r = Invoke-Nexus POST '/security/users' @{
-            userId = $PlatformUser; firstName = 'cenit'; lastName = 'admin'; emailAddress = (Get-Cfg 'ADMIN_EMAIL')
-            password = (Get-Cfg 'CENIT_TOKEN'); status = 'active'; roles = @('nx-admin')
-        }
-        if ($r.Status -lt 200 -or $r.Status -ge 300) { Stop-WithError "No se pudo crear el usuario $PlatformUser en Nexus (HTTP $($r.Status)): $($r.Raw)" }
-    }
-    Write-Ok "Usuario $PlatformUser (token de plataforma) en Nexus"
+    if (-not $ready) { Stop-WithError "El repositorio NuGet no arranca. Mira: cd infra; docker compose logs nuget" }
+    $code = Invoke-Native { curl.exe -s -o NUL -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/v3/index.json" }
+    if ("$code".Trim() -ne '401') { Write-Warn "El feed NuGet responde $code sin credenciales (se esperaba 401: feed privado)." }
+    Write-Ok ("Feed privado: $(Get-Cfg 'NUGET_PUBLIC_URL')v3/index.json (retencion: $(Get-Cfg 'NUGET_RETENTION_MAJOR') mayores, " +
+        "$(Get-Cfg 'NUGET_RETENTION_MINOR') menores, $(Get-Cfg 'NUGET_RETENTION_PATCH') parches, $(Get-Cfg 'NUGET_RETENTION_PRERELEASE') prereleases)")
 }
 
 # ----------------------------------------------------------------------------
@@ -1013,6 +943,21 @@ function Write-Table([object[]]$Rows) {
     & $line ([char]0x2514) ([char]0x2534) ([char]0x2518)
 }
 
+# Configuracion publica del portal (GET /api/config); $null si no responde.
+function Get-PortalConfig {
+    $domain = Get-Cfg 'DOMAIN'
+    try {
+        if ((Get-Cfg 'CENIT_MODE') -eq 'production') {
+            $raw = Invoke-Native { curl.exe -sk --max-time 5 --resolve "cloud.${domain}:443:127.0.0.1" "https://cloud.$domain/api/config" }
+        } else {
+            $raw = Invoke-Native { curl.exe -s --max-time 5 -H "Host: cloud.$domain" "http://127.0.0.1:$(Get-Cfg 'HTTP_PORT')/api/config" }
+        }
+        return (($raw -join '') | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
 function Show-Summary {
     $s = Get-Cfg 'PUBLIC_SCHEME'; $d = Get-Cfg 'DOMAIN'; $p = Get-Cfg 'PUBLIC_PORT_SUFFIX'
     $email = Get-Cfg 'ADMIN_EMAIL'; $pass = Get-Cfg 'ADMIN_PASSWORD'; $token = Get-Cfg 'CENIT_TOKEN'
@@ -1020,23 +965,27 @@ function Show-Summary {
     Write-Section "Todo listo"
     Write-Host ""
     Write-Table @(
-        , @('Servicio', 'URL', 'Usuario', 'Clave')
-        , @('Portal ahora-cenit', "${s}://cloud.$d$p", $email, $pass); '-'
+        , @('Herramienta', 'URL', 'Usuario', 'Clave o token')
+        , @('Portal ahora-cenit', "${s}://cloud.$d$p", $email, $pass)
+        , @('', "${s}://cloud.$d$p/api  (API)", 'Bearer / X-Api-Key', $token); '-'
         , @('Portainer', "${s}://portainer.$d$p", $AdminUser, $pass); '-'
         , @('Traefik', "${s}://traefik.$d$p", $AdminUser, $pass); '-'
         , @('OpenObserve', "${s}://telemetry.$d$p", $email, $pass); '-'
-        , @('Registry Docker', $reg, $AdminUser, $pass)
-        , @('', '', $PlatformUser, $token); '-'
-        , @('Repositorio NuGet', $nu, $AdminUser, $pass)
-        , @('', '', $PlatformUser, $token); '-'
-        , @('API del portal', "${s}://cloud.$d$p/api", 'Bearer / X-Api-Key', $token); '-'
-        , @('SQL Server', 'sqlserver:1433 (red interna)', 'sa', (Get-Cfg 'DB_SA_PASSWORD')); '-'
+        , @('Repositorio Docker', "$reg  (docker login)", $AdminUser, $pass)
+        , @('', "${s}://registry.$d$p/v2/_catalog", $PlatformUser, $token); '-'
+        , @('Repositorio NuGet', "${s}://nuget.$d$p  (web)", $AdminUser, $pass)
+        , @('', "${nu}v3/index.json  (feed)", $PlatformUser, $token)
+        , @('', '', "$AppsNugetUser (solo lectura)", (Get-Cfg 'NUGET_READ_TOKEN'))
+        , @('', '', 'API key (subir paquetes)', $token); '-'
+        , @('SQL Server', 'sqlserver:1433 (red interna)', 'sa', (Get-Cfg 'DB_SA_PASSWORD'))
+        , @('', "${s}://sqladmin.$d$p  (explorador)", 'se abre desde Cenit', 'sin credenciales'); '-'
         , @('Apps desplegadas', "${s}://<nombre>.$d$p", '', '')
     )
     Write-Host ""
-    Write-Host "  Feeds NuGet" -ForegroundColor White
-    Write-Host "     public   : ${nu}repository/public/index.json    (leer: sin login; escribir: con login)"
-    Write-Host "     internal : ${nu}repository/internal/index.json  (leer y escribir: con login)"
+    Write-Host "  Repositorio NuGet (BaGetter, feed privado; web: ${s}://nuget.$d$p con el login de administracion)" -ForegroundColor White
+    Write-Host "     leer  : dotnet nuget add source ${nu}v3/index.json -n cenit -u $PlatformUser -p <CENIT_TOKEN> --store-password-in-clear-text"
+    Write-Host "     subir : dotnet nuget push <paquete>.nupkg -s ${nu}v3/index.json -k <CENIT_TOKEN>"
+    Write-Host "     borrar: dotnet nuget delete <id> <version> -s ${nu}v3/index.json -k <CENIT_TOKEN>   (borrado definitivo)"
     Write-Host ""
     Write-Host "  Token de plataforma (CENIT_TOKEN, usuario $PlatformUser)" -ForegroundColor White
     Write-Host "     API    : curl -H `"Authorization: Bearer $token`" ${s}://cloud.$d$p/api/products"
@@ -1045,15 +994,22 @@ function Show-Summary {
     if ($script:GeneratedPassword) {
         Write-Host "  La contrasena de administrador se ha generado automaticamente: apuntala." -ForegroundColor Yellow
     }
-    if ((Get-Cfg 'APPS_SQL_MODE') -eq 'shared') {
-        Write-Host "  SQL Server de las aplicaciones: motor comun (el de la plataforma, un login por cliente)."
+    # Lo que manda es el ajuste del portal (Administracion > Ajustes); el .env solo es el valor inicial.
+    $portalCfg = Get-PortalConfig
+    if ($portalCfg -and $portalCfg.appsSqlMode) {
+        $sqlMode = "$($portalCfg.appsSqlMode)".ToLowerInvariant(); $registration = [bool]$portalCfg.registrationEnabled; $origin = 'ajuste del portal'
     } else {
-        Write-Host "  SQL Server de las aplicaciones: uno por aplicacion (la imagen SQL de cada compose)."
+        $sqlMode = Get-Cfg 'APPS_SQL_MODE'; $registration = (Get-Cfg 'REGISTRATION_ENABLED') -eq 'true'; $origin = 'valor inicial'
     }
-    if ((Get-Cfg 'REGISTRATION_ENABLED') -eq 'true') {
-        Write-Host "  Registro de usuarios externos (valor inicial): HABILITADO (cualquiera puede crearse una cuenta y desplegar)" -ForegroundColor Yellow
+    if ($sqlMode -eq 'shared') {
+        Write-Host "  SQL Server de las aplicaciones (${origin}): BBDD compartida (el de la plataforma, un login por cliente)."
     } else {
-        Write-Host "  Registro de usuarios externos (valor inicial): deshabilitado (solo el administrador da de alta usuarios)."
+        Write-Host "  SQL Server de las aplicaciones (${origin}): BBDD independiente (la imagen SQL de cada compose)."
+    }
+    if ($registration) {
+        Write-Host "  Registro de usuarios externos (${origin}): HABILITADO (cualquiera puede crearse una cuenta y desplegar)" -ForegroundColor Yellow
+    } else {
+        Write-Host "  Registro de usuarios externos (${origin}): deshabilitado (solo el administrador da de alta usuarios)."
     }
     Write-Host "  Todas las credenciales estan guardadas en infra\.env."
     if ((Get-Cfg 'CENIT_MODE') -eq 'production') {
@@ -1100,7 +1056,7 @@ function Invoke-Install {
     Confirm-Network
     Start-Stack
     Set-PortainerConfiguration
-    Set-NexusConfiguration
+    Wait-Nuget
     Sync-PlatformToken
     Invoke-Compose up -d --remove-orphans   # recrea el portal con la API key de Portainer
     Wait-App
@@ -1114,7 +1070,9 @@ function Invoke-Update {
         Invoke-Native { git -C $ScriptRoot pull --ff-only }
         if ($LASTEXITCODE -eq 0) {
             # El propio instalador puede haber cambiado: continuar con la versión nueva.
-            $next = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '--update', '--skip-git-pull')
+            # Con "&" PowerShell ya entrecomilla cada argumento: la ruta va tal cual (con comillas
+            # propias llegaria como '"C:\...\install.ps1"' y pwsh no la encontraria).
+            $next = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, '--update', '--skip-git-pull')
             if ($AssumeYes) { $next += '--yes' }
             if ($NoBackup) { $next += '--no-backup' }
             if ($HttpPortArg) { $next += '--http-port'; $next += $HttpPortArg }
@@ -1134,7 +1092,7 @@ function Invoke-Update {
     Confirm-Network
     Start-Stack
     Set-PortainerConfiguration
-    Set-NexusConfiguration
+    Wait-Nuget
     Sync-PlatformToken
     Invoke-Compose up -d --remove-orphans
     Write-Info "Limpiando imagenes antiguas..."

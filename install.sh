@@ -28,15 +28,17 @@ JQ_IMAGE="ghcr.io/jqlang/jq:1.7.1"
 HTPASSWD_IMAGE="httpd:2.4-alpine"
 HELPER_IMAGE="alpine:3.20"
 ADMIN_USER="admin"
-PLATFORM_USER="cenit-admin"   # usuario de automatización (token de plataforma): registry y Nexus
-VOLUMES=(cenit_sqlserver_data cenit_portainer_data cenit_registry_data cenit_openobserve_data cenit_nexus_data cenit_letsencrypt)
+PLATFORM_USER="cenit-admin"   # usuario de automatización (token de plataforma): registry y repositorio NuGet
+APPS_NUGET_USER="cenit-apps"  # usuario de solo lectura del repositorio NuGet para las aplicaciones (NUGET_READ_TOKEN)
+VOLUMES=(cenit_sqlserver_data cenit_portainer_data cenit_registry_data cenit_openobserve_data cenit_nuget_data cenit_letsencrypt)
 LEGACY_CONTAINERS=(traefik portainer app sqlserver openobserve)
 
 # Orden y comentarios con los que se escribe infra/.env.
 ENV_KEYS=(CENIT_MODE DOMAIN PUBLIC_SCHEME HTTP_PORT PUBLIC_PORT_SUFFIX COMPOSE_FILE COMPOSE_PATH_SEPARATOR ACME_EMAIL
-  ADMIN_EMAIL ADMIN_PASSWORD DB_SA_PASSWORD MSSQL_PID APPS_SQL_MODE JWT_SECRET APP_IMAGE APP_VERSION
+  ADMIN_EMAIL ADMIN_PASSWORD DB_SA_PASSWORD MSSQL_PID APPS_SQL_MODE TRASH_RETENTION_DAYS JWT_SECRET APP_IMAGE APP_VERSION
   PORTAINER_API_KEY PORTAINER_ENDPOINT_ID PORTAINER_LOCAL_PORT REGISTRY_HOST REGISTRY_LOCAL_PORT
-  NUGET_PUBLIC_URL NUGET_LOCAL_PORT CENIT_TOKEN
+  NUGET_PUBLIC_URL NUGET_LOCAL_PORT CENIT_TOKEN NUGET_READ_TOKEN
+  NUGET_RETENTION_MAJOR NUGET_RETENTION_MINOR NUGET_RETENTION_PATCH NUGET_RETENTION_PRERELEASE
   REGISTRATION_ENABLED REQUIRE_EMAIL_CONFIRMATION SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASSWORD SMTP_FROM
   OTEL_EXPORTER_OTLP_ENDPOINT)
 
@@ -254,6 +256,12 @@ apply_defaults() {
     # Instalación existente sin token (o token borrado para rotarlo): hay que darlo de alta en el registry.
     [ -f "$AUTH_DIR/htpasswd" ] && TOKEN_CHANGED=1
   fi
+  : "${CFG[NUGET_READ_TOKEN]:=cenit_read_$(random_from 'A-Za-z0-9' 40)}"
+  # Política de retención del repositorio NuGet: versiones que se conservan de cada paquete.
+  : "${CFG[NUGET_RETENTION_MAJOR]:=3}"
+  : "${CFG[NUGET_RETENTION_MINOR]:=5}"
+  : "${CFG[NUGET_RETENTION_PATCH]:=5}"
+  : "${CFG[NUGET_RETENTION_PRERELEASE]:=10}"
   if [ "$mode" = "production" ]; then
     CFG[NUGET_PUBLIC_URL]="https://nuget.${CFG[DOMAIN]}/"
   else
@@ -265,6 +273,7 @@ apply_defaults() {
   : "${CFG[DB_SA_PASSWORD]:=$(gen_secret 32)}"
   : "${CFG[MSSQL_PID]:=Express}"
   : "${CFG[APPS_SQL_MODE]:=dedicated}"
+  : "${CFG[TRASH_RETENTION_DAYS]:=7}"
   : "${CFG[JWT_SECRET]:=$(gen_secret 64)}"
   : "${CFG[APP_IMAGE]:=ghcr.io/rpardoahora/ahora-cenit}"
   : "${CFG[APP_VERSION]:=latest}"
@@ -299,10 +308,12 @@ write_env() {
         ADMIN_EMAIL)       echo; echo "# --- Administrador: portal, Portainer, Traefik, registry y OpenObserve ---" ;;
         DB_SA_PASSWORD)    echo; echo "# --- Secretos internos (generados automáticamente) ---" ;;
         MSSQL_PID)         echo "# Edición de SQL Server: Express (gratis, apta para producción), Developer (solo pruebas) o Standard/Enterprise/clave con licencia." ;;
-        APPS_SQL_MODE)     echo "# SQL Server de las aplicaciones: dedicated (cada una con su imagen SQL) o shared (todas en el de la plataforma, un login por cliente). Solo afecta a los despliegues nuevos." ;;
+        TRASH_RETENTION_DAYS) echo "# Papelera: días que pasan las instancias y los clientes borrados (parados) antes de eliminarse del todo con sus datos." ;;
+        APPS_SQL_MODE)     echo "# SQL Server de las aplicaciones: dedicated (cada una con su imagen SQL) o shared (todas en el de la plataforma, un login por cliente). Valor inicial: después se cambia en Administración > Ajustes del portal." ;;
         APP_IMAGE)         echo; echo "# --- Imagen del portal (APP_VERSION: latest o sha-<commit> / v<versión>) ---" ;;
         PORTAINER_API_KEY) echo; echo "# --- Portainer / registry (rellenado por el instalador) ---" ;;
-        NUGET_PUBLIC_URL)  echo; echo "# --- NuGet (Nexus) y token de plataforma. CENIT_TOKEN es la contraseña del usuario $PLATFORM_USER: vale para la API del portal, docker login y NuGet ---" ;;
+        NUGET_PUBLIC_URL)  echo; echo "# --- Repositorio NuGet (BaGetter, feed privado en <NUGET_PUBLIC_URL>v3/index.json) y token de plataforma. CENIT_TOKEN: API del portal, docker login, leer NuGet (usuario $PLATFORM_USER) y subir paquetes (API key) ---" ;;
+        NUGET_RETENTION_MAJOR) echo "# Retención NuGet: versiones que se conservan de cada paquete (mayores, menores, parches y prereleases); al subir se borran las que sobren." ;;
         REGISTRATION_ENABLED) echo; echo "# --- Registro de usuarios externos (valor inicial: después manda Administración > Ajustes del portal) ---" ;;
         REQUIRE_EMAIL_CONFIRMATION) echo "# --- Emails (SMTP vacío = los emails solo se escriben en el log) ---" ;;
         OTEL_EXPORTER_OTLP_ENDPOINT) echo; echo "# --- Telemetría (vacío = no exportar a OpenObserve) ---" ;;
@@ -348,7 +359,7 @@ check_system() {
   esac
   local mem_kb; mem_kb="$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
   if [ "$mem_kb" -lt 5500000 ]; then
-    warn "La máquina tiene $((mem_kb / 1024)) MB de RAM. Se recomiendan al menos 8 GB (SQL Server y Nexus necesitan unos 2 GB cada uno)."
+    warn "La máquina tiene $((mem_kb / 1024)) MB de RAM. Se recomiendan al menos 8 GB (SQL Server necesita unos 2 GB)."
     ask_yes_no "¿Continuar de todos modos?" n || exit 1
   else
     ok "Memoria: $((mem_kb / 1024)) MB"
@@ -593,7 +604,7 @@ collect_config() {
   fi
 
   echo
-  info "SQL Server de las aplicaciones que se desplieguen:"
+  info "SQL Server de las aplicaciones que se desplieguen (valor inicial; después se cambia en Administración > Ajustes):"
   local sql_default=1; [ "$(cfg APPS_SQL_MODE)" = "shared" ] && sql_default=2
   local sql_choice; sql_choice="$(ask_choice "¿Un SQL Server por aplicación o un motor común?" "$sql_default" \
     "Uno por aplicación: cada app usa la imagen SQL que traiga su compose" \
@@ -772,6 +783,11 @@ configure_portainer() {
   local body="{\"Name\":\"ahora-cenit\",\"Type\":3,\"URL\":$(json_str "$reg_url"),\"BaseURL\":\"\",\"Authentication\":true,\"Username\":\"$ADMIN_USER\",\"Password\":$(json_str "$(cfg ADMIN_PASSWORD)")}"
   pt GET /api/registries >/dev/null
   local rid; rid="$(jq_run -r --arg n "ahora-cenit" '[.[] | select(.Name == $n)][0].Id // empty' <"$PT_BODY")"
+  # Una instalación interrumpida puede haber dejado duplicados: con dos del mismo nombre el PUT da 409.
+  local extra
+  for extra in $(jq_run -r --arg n "ahora-cenit" '[.[] | select(.Name == $n)][1:][].Id' <"$PT_BODY"); do
+    pt DELETE "/api/registries/$extra" >/dev/null
+  done
   local code
   if [ -n "$rid" ]; then code="$(pt PUT "/api/registries/$rid" "$body")"; else code="$(pt POST /api/registries "$body")"; fi
   [[ "$code" =~ ^20 ]] || die "No se pudo registrar el registry en Portainer (HTTP $code): $(cat "$PT_BODY")"
@@ -781,93 +797,21 @@ configure_portainer() {
 }
 
 # ----------------------------------------------------------------------------
-# Nexus Repository CE (NuGet): admin, EULA, feeds public/internal y usuario de automatización
+# Repositorio NuGet (BaGetter): se configura entero por variables de entorno
+# (feed privado, API key, borrado definitivo y retención); solo hay que esperarlo.
 # ----------------------------------------------------------------------------
-NX_USER="admin"; NX_PASS=""
-NEXUS_EULA_URL="https://links.sonatype.com/products/nxrm/ce-eula"
-
-nx() { # nx METODO RUTA [cuerpo] [content-type] -> imprime el código HTTP; cuerpo de la respuesta en $PT_BODY
-  local method="$1" path="$2" data="${3:-}" ctype="${4:-application/json}"
-  local args=(-sS -o "$PT_BODY" -w '%{http_code}' -X "$method" --max-time 60 -u "$NX_USER:$NX_PASS")
-  [ -n "$data" ] && args+=(-H "Content-Type: $ctype" --data "$data")
-  curl "${args[@]}" "http://127.0.0.1:$(cfg NUGET_LOCAL_PORT)/service/rest/v1$path" 2>/dev/null || true
-}
-
-nx_exists() { [ "$(nx GET "$1")" = "200" ]; }
-
-configure_nexus() {
-  section "Configurando el repositorio NuGet (Nexus)"
-  local port code i; port="$(cfg NUGET_LOCAL_PORT)"
-  info "Esperando a que Nexus arranque (la primera vez tarda 1-3 minutos)..."
-  for i in $(seq 1 120); do
-    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/service/rest/v1/status/writable" || true)"
+wait_nuget() {
+  section "Repositorio NuGet (BaGetter)"
+  local i code
+  for i in $(seq 1 60); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$(cfg NUGET_LOCAL_PORT)/health" || true)"
     [ "$code" = "200" ] && break
-    sleep 3
+    sleep 2
   done
-  [ "$code" = "200" ] || die "Nexus no arranca. Mira: cd infra && docker compose logs nexus"
-
-  # Contraseña de admin: la misma que el resto. Nexus arranca con una aleatoria en /nexus-data/admin.password.
-  NX_USER="admin"; NX_PASS="$(cfg ADMIN_PASSWORD)"
-  if ! nx_exists /security/anonymous; then
-    local init; init="$(dc exec -T nexus cat /nexus-data/admin.password 2>/dev/null | tr -d '\r\n' || true)"
-    if [ -z "$init" ]; then
-      warn "No se pudo entrar en Nexus como admin (¿se cambió su contraseña?). Configúralo desde su panel."
-      return 0
-    fi
-    NX_PASS="$init"
-    code="$(nx PUT /security/users/admin/change-password "$(cfg ADMIN_PASSWORD)" text/plain)"
-    [[ "$code" =~ ^20 ]] || die "No se pudo fijar la contraseña de admin de Nexus (HTTP $code): $(cat "$PT_BODY")"
-    NX_PASS="$(cfg ADMIN_PASSWORD)"
-    ok "Contraseña de administrador de Nexus fijada"
-  fi
-
-  # Sin aceptar el EULA de la edición Community, Nexus no deja subir ni bajar paquetes.
-  nx GET /system/eula >/dev/null
-  if [ "$(jq_run -r '.accepted' <"$PT_BODY")" != "true" ]; then
-    echo "  Nexus Repository Community Edition se rige por el EULA de Sonatype: $NEXUS_EULA_URL"
-    echo "  (edición gratuita con límites: 40.000 componentes y 100.000 peticiones al día)."
-    if ask_yes_no "¿Aceptas ese EULA?" s; then
-      local body; body="$(jq_run -c '.accepted=true' <"$PT_BODY")"
-      code="$(nx POST /system/eula "$body")"
-      [[ "$code" =~ ^20 ]] || die "No se pudo aceptar el EULA de Nexus (HTTP $code): $(cat "$PT_BODY")"
-      ok "EULA de Nexus Community Edition aceptado"
-    else
-      warn "Sin aceptar el EULA, Nexus no permitirá subir ni descargar paquetes hasta que lo aceptes desde su panel."
-    fi
-  fi
-
-  # Feeds: internal (lectura y escritura con login) y public (lectura anónima, escritura con login).
-  local r
-  for r in internal public; do
-    if ! nx_exists "/repositories/$r"; then
-      code="$(nx POST /repositories/nuget/hosted "{\"name\":\"$r\",\"online\":true,\"storage\":{\"blobStoreName\":\"default\",\"strictContentTypeValidation\":true,\"writePolicy\":\"allow\"}}")"
-      [[ "$code" =~ ^20 ]] || die "No se pudo crear el feed '$r' en Nexus (HTTP $code): $(cat "$PT_BODY")"
-    fi
-    ok "Feed NuGet '$r'"
-  done
-
-  # Acceso anónimo limitado a LEER el feed public. Solo la primera vez (marca: existe el rol public-read).
-  if ! nx_exists /security/roles/public-read; then
-    code="$(nx POST /security/roles '{"id":"public-read","name":"public-read","description":"Lectura anonima del feed public","privileges":["nx-repository-view-nuget-public-read","nx-repository-view-nuget-public-browse"],"roles":[]}')"
-    [[ "$code" =~ ^20 ]] || die "No se pudo crear el rol public-read en Nexus (HTTP $code): $(cat "$PT_BODY")"
-    nx PUT /security/users/anonymous '{"userId":"anonymous","firstName":"Anonymous","lastName":"User","emailAddress":"anonymous@example.org","source":"default","status":"active","roles":["public-read"]}' >/dev/null
-    nx PUT /security/anonymous '{"enabled":true,"userId":"anonymous","realmName":"NexusAuthorizingRealm"}' >/dev/null
-    # Repositorios de ejemplo (maven, nuget) que trae Nexus: no hacen falta.
-    for r in maven-releases maven-snapshots maven-central maven-public nuget-hosted nuget.org-proxy nuget-group; do
-      nx DELETE "/repositories/$r" >/dev/null
-    done
-    ok "Acceso anónimo: solo lectura del feed public"
-  fi
-
-  # Usuario de automatización: cenit-admin, con el token de plataforma como contraseña.
-  nx GET "/security/users?userId=$PLATFORM_USER" >/dev/null
-  if [ "$(jq_run 'length' <"$PT_BODY")" != "0" ]; then
-    nx PUT "/security/users/$PLATFORM_USER/change-password" "$(cfg CENIT_TOKEN)" text/plain >/dev/null
-  else
-    code="$(nx POST /security/users "{\"userId\":\"$PLATFORM_USER\",\"firstName\":\"cenit\",\"lastName\":\"admin\",\"emailAddress\":\"$(cfg ADMIN_EMAIL)\",\"password\":\"$(cfg CENIT_TOKEN)\",\"status\":\"active\",\"roles\":[\"nx-admin\"]}")"
-    [[ "$code" =~ ^20 ]] || die "No se pudo crear el usuario $PLATFORM_USER en Nexus (HTTP $code): $(cat "$PT_BODY")"
-  fi
-  ok "Usuario $PLATFORM_USER (token de plataforma) en Nexus"
+  [ "$code" = "200" ] || die "El repositorio NuGet no arranca. Mira: cd infra && docker compose logs nuget"
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$(cfg NUGET_LOCAL_PORT)/v3/index.json" || true)"
+  [ "$code" = "401" ] || warn "El feed NuGet responde $code sin credenciales (se esperaba 401: feed privado)."
+  ok "Feed privado: $(cfg NUGET_PUBLIC_URL)v3/index.json (retención: $(cfg NUGET_RETENTION_MAJOR) mayores, $(cfg NUGET_RETENTION_MINOR) menores, $(cfg NUGET_RETENTION_PATCH) parches, $(cfg NUGET_RETENTION_PRERELEASE) prereleases)"
 }
 
 # ----------------------------------------------------------------------------
@@ -904,14 +848,14 @@ wait_app() {
 }
 
 # Tabla con bordes y una columna de color cada una. Cada fila son 4 campos
-# separados por ; la fila "-" pinta un separador. Las celdas van sin tildes
+# separados por \x1f; la fila "-" pinta un separador. Las celdas van sin tildes
 # para que el ancho cuadre aunque sudo arranque con LANG=C.
 print_table() {
   local -a w=(0 0 0 0) cells colors=("$C_BOLD" "$C_CYAN" "$C_GREEN" "$C_BOLD$C_YELLOW")
   local r i text
   for r in "$@"; do
     [ "$r" = "-" ] && continue
-    IFS=$'' read -r -a cells <<<"$r"
+    IFS=$'\x1f' read -r -a cells <<<"$r"
     for i in 0 1 2 3; do
       text="${cells[i]:-}"
       [ "${#text}" -gt "${w[i]}" ] && w[i]=${#text}
@@ -930,7 +874,7 @@ print_table() {
   hline "┌" "┬" "┐"
   for r in "$@"; do
     if [ "$r" = "-" ]; then hline "├" "┼" "┤"; continue; fi
-    IFS=$'' read -r -a cells <<<"$r"
+    IFS=$'\x1f' read -r -a cells <<<"$r"
     local line="  $C_CYAN│$C_RESET" color
     for i in 0 1 2 3; do
       text="${cells[i]:-}"
@@ -944,19 +888,45 @@ print_table() {
   hline "└" "┴" "┘"
 }
 
+# Configuración pública del portal (GET /api/config); vacío si no responde.
+portal_config() {
+  local domain; domain="$(cfg DOMAIN)"
+  if [ "$(cfg CENIT_MODE)" = "production" ]; then
+    curl -sk --max-time 5 --resolve "cloud.$domain:443:127.0.0.1" "https://cloud.$domain/api/config" 2>/dev/null || true
+  else
+    curl -s --max-time 5 -H "Host: cloud.$domain" "http://127.0.0.1:$(cfg HTTP_PORT)/api/config" 2>/dev/null || true
+  fi
+}
+
 print_summary() {
   local s d p; s="$(cfg PUBLIC_SCHEME)"; d="$(cfg DOMAIN)"; p="$(cfg PUBLIC_PORT_SUFFIX)"
   local email pass token reg nu; email="$(cfg ADMIN_EMAIL)"; pass="$(cfg ADMIN_PASSWORD)"
   token="$(cfg CENIT_TOKEN)"; reg="$(cfg REGISTRY_HOST)"; nu="$(cfg NUGET_PUBLIC_URL)"
-  local F=$''
+  local F=$'\x1f'
   section "Todo listo"
   echo
-  print_table     "Servicio${F}URL${F}Usuario${F}Clave"     "Portal ahora-cenit${F}$s://cloud.$d$p${F}$email${F}$pass" "-"     "Portainer${F}$s://portainer.$d$p${F}$ADMIN_USER${F}$pass" "-"     "Traefik${F}$s://traefik.$d$p${F}$ADMIN_USER${F}$pass" "-"     "OpenObserve${F}$s://telemetry.$d$p${F}$email${F}$pass" "-"     "Registry Docker${F}$reg${F}$ADMIN_USER${F}$pass"     "${F}${F}$PLATFORM_USER${F}$token" "-"     "Repositorio NuGet${F}$nu${F}$ADMIN_USER${F}$pass"     "${F}${F}$PLATFORM_USER${F}$token" "-"     "API del portal${F}$s://cloud.$d$p/api${F}Bearer / X-Api-Key${F}$token" "-"     "SQL Server${F}sqlserver:1433 (red interna)${F}sa${F}$(cfg DB_SA_PASSWORD)" "-"     "Apps desplegadas${F}$s://<nombre>.$d$p${F}${F}"
+  print_table \
+    "Herramienta${F}URL${F}Usuario${F}Clave o token" \
+    "Portal ahora-cenit${F}$s://cloud.$d$p${F}$email${F}$pass" \
+    "${F}$s://cloud.$d$p/api  (API)${F}Bearer / X-Api-Key${F}$token" "-" \
+    "Portainer${F}$s://portainer.$d$p${F}$ADMIN_USER${F}$pass" "-" \
+    "Traefik${F}$s://traefik.$d$p${F}$ADMIN_USER${F}$pass" "-" \
+    "OpenObserve${F}$s://telemetry.$d$p${F}$email${F}$pass" "-" \
+    "Repositorio Docker${F}$reg  (docker login)${F}$ADMIN_USER${F}$pass" \
+    "${F}$s://registry.$d$p/v2/_catalog${F}$PLATFORM_USER${F}$token" "-" \
+    "Repositorio NuGet${F}$s://nuget.$d$p  (web)${F}$ADMIN_USER${F}$pass" \
+    "${F}${nu}v3/index.json  (feed)${F}$PLATFORM_USER${F}$token" \
+    "${F}${F}$APPS_NUGET_USER (solo lectura)${F}$(cfg NUGET_READ_TOKEN)" \
+    "${F}${F}API key (subir paquetes)${F}$token" "-" \
+    "SQL Server${F}sqlserver:1433 (red interna)${F}sa${F}$(cfg DB_SA_PASSWORD)" \
+    "${F}$s://sqladmin.$d$p  (explorador)${F}se abre desde Cenit${F}sin credenciales" "-" \
+    "Apps desplegadas${F}$s://<nombre>.$d$p${F}${F}"
   cat <<EOF
 
-  ${C_BOLD}Feeds NuGet${C_RESET}
-     public   : ${C_CYAN}${nu}repository/public/index.json${C_RESET}    (leer: sin login; escribir: con login)
-     internal : ${C_CYAN}${nu}repository/internal/index.json${C_RESET}  (leer y escribir: con login)
+  ${C_BOLD}Repositorio NuGet${C_RESET} (BaGetter, feed privado; web: ${C_CYAN}$s://nuget.$d$p${C_RESET} con el login de administración)
+     leer  : dotnet nuget add source ${nu}v3/index.json -n cenit -u $PLATFORM_USER -p <CENIT_TOKEN> --store-password-in-clear-text
+     subir : dotnet nuget push <paquete>.nupkg -s ${nu}v3/index.json -k <CENIT_TOKEN>
+     borrar: dotnet nuget delete <id> <versión> -s ${nu}v3/index.json -k <CENIT_TOKEN>   (borrado definitivo)
 
   ${C_BOLD}Token de plataforma${C_RESET} (CENIT_TOKEN, usuario $PLATFORM_USER)
      API    : curl -H "Authorization: Bearer $token" $s://cloud.$d$p/api/products
@@ -964,18 +934,25 @@ print_summary() {
 EOF
   echo
   if [ "$GENERATED_PASSWORD" -eq 1 ]; then
-    printf '  %sLa contraseña de administrador se ha generado automáticamente: apúntala.%s
-' "$C_BOLD$C_YELLOW" "$C_RESET"
+    printf '  %sLa contraseña de administrador se ha generado automáticamente: apúntala.%s\n' "$C_BOLD$C_YELLOW" "$C_RESET"
   fi
-  if [ "$(cfg APPS_SQL_MODE)" = "shared" ]; then
-    echo "  SQL Server de las aplicaciones: motor común (el de la plataforma, un login por cliente)."
-  else
-    echo "  SQL Server de las aplicaciones: uno por aplicación (la imagen SQL de cada compose)."
+  # Lo que manda es el ajuste del portal (Administración > Ajustes); el .env solo es el valor inicial.
+  local portal_cfg sql_mode registration origin="ajuste del portal"
+  portal_cfg="$(portal_config)"
+  sql_mode="$(printf '%s' "$portal_cfg" | grep -o '"appsSqlMode":"[A-Za-z]*"' | cut -d'"' -f4 | tr '[:upper:]' '[:lower:]')"
+  registration="$(printf '%s' "$portal_cfg" | grep -o '"registrationEnabled":[a-z]*' | cut -d: -f2)"
+  if [ -z "$sql_mode" ] || [ -z "$registration" ]; then
+    sql_mode="$(cfg APPS_SQL_MODE)"; registration="$(cfg REGISTRATION_ENABLED)"; origin="valor inicial"
   fi
-  if [ "$(cfg REGISTRATION_ENABLED)" = "true" ]; then
-    printf '  %sRegistro de usuarios externos (valor inicial): HABILITADO%s (cualquiera puede crearse una cuenta y desplegar)\n' "$C_BOLD$C_YELLOW" "$C_RESET"
+  if [ "$sql_mode" = "shared" ]; then
+    echo "  SQL Server de las aplicaciones ($origin): BBDD compartida (el de la plataforma, un login por cliente)."
   else
-    echo "  Registro de usuarios externos (valor inicial): deshabilitado (solo el administrador da de alta usuarios)."
+    echo "  SQL Server de las aplicaciones ($origin): BBDD independiente (la imagen SQL de cada compose)."
+  fi
+  if [ "$registration" = "true" ]; then
+    printf '  %sRegistro de usuarios externos (%s): HABILITADO%s (cualquiera puede crearse una cuenta y desplegar)\n' "$C_BOLD$C_YELLOW" "$origin" "$C_RESET"
+  else
+    echo "  Registro de usuarios externos ($origin): deshabilitado (solo el administrador da de alta usuarios)."
   fi
   echo "  Todas las credenciales están guardadas en infra/.env."
   if [ "$(cfg CENIT_MODE)" = "production" ]; then
@@ -1020,7 +997,7 @@ do_install() {
   ensure_network
   start_stack
   configure_portainer
-  configure_nexus
+  wait_nuget
   sync_platform_token
   dc up -d --remove-orphans   # recrea el portal con la API key de Portainer
   wait_app
@@ -1057,7 +1034,7 @@ do_update() {
   ensure_network
   start_stack
   configure_portainer
-  configure_nexus
+  wait_nuget
   sync_platform_token
   dc up -d --remove-orphans
   info "Limpiando imágenes antiguas..."
