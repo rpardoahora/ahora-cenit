@@ -4,6 +4,7 @@ import type { ApplicationStatus } from "@/types"
 const STATUS_LABEL: Record<ApplicationStatus, string> = {
   Running: "En ejecución",
   Provisioning: "Obteniendo certificado...",
+  Starting: "Arrancando...",
   Stopped: "Parada",
   Deploying: "Desplegando",
   Error: "Error",
@@ -16,6 +17,7 @@ const STATUS_VARIANT: Record<
 > = {
   Running: "default",
   Provisioning: "outline",
+  Starting: "outline",
   Stopped: "secondary",
   Deploying: "outline",
   Error: "destructive",

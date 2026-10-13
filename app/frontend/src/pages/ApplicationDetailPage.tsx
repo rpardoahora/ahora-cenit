@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { StatusBadge } from "@/components/StatusBadge"
+import { StartupProgressView } from "@/components/StartupProgressView"
 import { DeleteApplicationDialog } from "@/components/DeleteApplicationDialog"
 import { SqlAdminLaunchButton } from "@/components/SqlAdminLaunchButton"
 import { useAuth } from "@/context/AuthContext"
@@ -34,7 +35,7 @@ export function ApplicationDetailPage() {
       if (data.portainerStackId !== null) {
         applicationsApi
           .status(id)
-          .then(({ status }) => setApplication((prev) => (prev ? { ...prev, status } : prev)))
+          .then(({ status, startup }) => setApplication((prev) => (prev ? { ...prev, status, startup } : prev)))
           .catch(() => {
             // Si Portainer no responde, se mantiene el último estado conocido.
           })
@@ -56,15 +57,15 @@ export function ApplicationDetailPage() {
   // un despliegue lento puede haberse marcado como error por timeout aunque en Portainer
   // haya terminado bien, y el próximo refresco automático lo recupera solo.
   useEffect(() => {
-    const pollableStatuses = ["Deploying", "Provisioning", "Error"]
+    const pollableStatuses = ["Deploying", "Provisioning", "Starting", "Error"]
     if (!id || !application || !pollableStatuses.includes(application.status)) {
       return
     }
 
     const interval = setInterval(async () => {
       try {
-        const { status } = await applicationsApi.status(id)
-        setApplication((prev) => (prev ? { ...prev, status } : prev))
+        const { status, startup } = await applicationsApi.status(id)
+        setApplication((prev) => (prev ? { ...prev, status, startup } : prev))
       } catch {
         // se reintenta en el próximo tick
       }
@@ -77,8 +78,8 @@ export function ApplicationDetailPage() {
     if (!id) return
     setIsRefreshing(true)
     try {
-      const { status } = await applicationsApi.status(id)
-      setApplication((prev) => (prev ? { ...prev, status } : prev))
+      const { status, startup } = await applicationsApi.status(id)
+      setApplication((prev) => (prev ? { ...prev, status, startup } : prev))
     } catch {
       toast.error("No se pudo refrescar el estado.")
     } finally {
@@ -148,19 +149,33 @@ export function ApplicationDetailPage() {
             <dd>{application.ownerName}</dd>
             <dt className="text-muted-foreground">URL</dt>
             <dd>
-              <a
-                href={application.url}
-                target="_blank"
-                rel="noreferrer"
-                className="text-primary underline-offset-4 hover:underline"
-              >
-                {application.fullDomain}
-              </a>
+              {application.status === "Running" || application.status === "Provisioning" ? (
+                <a
+                  href={application.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-primary underline-offset-4 hover:underline"
+                >
+                  {application.fullDomain}
+                </a>
+              ) : (
+                // Mientras arranca (o parada) abrirla solo daría un error.
+                <span className="text-muted-foreground">{application.fullDomain}</span>
+              )}
             </dd>
             <dt className="text-muted-foreground">Creada</dt>
             <dd>{new Date(application.createdAt).toLocaleString()}</dd>
           </dl>
 
+          {application.status === "Starting" && (
+            <div className="flex flex-col gap-2">
+              {application.startup && <StartupProgressView progress={application.startup} />}
+              <p className="text-sm text-muted-foreground">
+                La aplicación está arrancando (la primera vez instala su base de datos y puede tardar unos minutos).
+                Podrás abrirla en cuanto responda; esta página se actualiza sola.
+              </p>
+            </div>
+          )}
           {application.status === "Provisioning" && (
             <p className="text-sm text-muted-foreground">
               El contenedor ya está en marcha; Traefik está emitiendo el certificado HTTPS
@@ -200,7 +215,7 @@ export function ApplicationDetailPage() {
             <Button variant="outline" onClick={handleRefresh} disabled={isRefreshing}>
               {isRefreshing ? "Actualizando..." : "Refrescar estado"}
             </Button>
-            {application.status === "Running" || application.status === "Provisioning" ? (
+            {application.status === "Running" || application.status === "Provisioning" || application.status === "Starting" ? (
               <Button variant="outline" onClick={handleStop}>
                 Parar
               </Button>

@@ -190,6 +190,7 @@ export interface ImportProductsResult {
 export type ApplicationStatus =
   | "Deploying"
   | "Provisioning"
+  | "Starting"
   | "Running"
   | "Stopped"
   | "Error"
@@ -211,6 +212,17 @@ export interface Application {
   portainerEndpointId: number
   createdAt: string
   updatedAt: string
+  /** Mientras arranca: por dónde va (solo en la respuesta del refresco de estado). */
+  startup?: StartupProgress | null
+}
+
+/** Paso del arranque; step/stepCount, si los hay, son para una barra "paso 3 de 6". */
+export interface StartupProgress {
+  title: string
+  detail: string | null
+  step: number | null
+  stepCount: number | null
+  isError: boolean
 }
 
 export interface DeploySuggestion {
@@ -231,6 +243,33 @@ export interface CreateApplicationInput {
   userId?: string
   /** Solo administradores. */
   sqlMode?: AppsSqlMode
+}
+
+/** La máquina Docker: uso leído de su kernel (null si no se pudo leer) y datos de Docker. */
+export interface DockerHost {
+  usage: {
+    cpuPercent: number | null
+    loadAverage: number[] | null
+    memoryTotalBytes: number | null
+    memoryUsedBytes: number | null
+    diskTotalBytes: number | null
+    diskUsedBytes: number | null
+    uptimeSeconds: number | null
+  }
+  docker: {
+    cpus: number
+    memoryBytes: number
+    operatingSystem: string
+    kernelVersion: string
+    dockerVersion: string
+    containers: number
+    containersRunning: number
+    images: number
+    imagesBytes: number
+    volumesBytes: number
+    containersBytes: number
+    buildCacheBytes: number
+  } | null
 }
 
 export interface ApplicationUsage {

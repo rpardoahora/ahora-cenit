@@ -3,6 +3,7 @@ using AhoraCenit.Api.Data;
 using AhoraCenit.Api.Features.AdminSettings;
 using AhoraCenit.Api.Features.AdminTools;
 using AhoraCenit.Api.Features.Trash;
+using AhoraCenit.Api.Features.DockerHost;
 using AhoraCenit.Api.Features.SqlAdmin;
 using AhoraCenit.Api.Features.Applications;
 using AhoraCenit.Api.Features.Auth;
@@ -225,6 +226,7 @@ app.MapGroup("/api/users").MapUsersEndpoints();
 app.MapGroup("/api/admin/tools").MapAdminToolsEndpoints();
 app.MapGroup("/api/admin/settings").MapAdminSettingsEndpoints();
 app.MapGroup("/api/admin/trash").MapTrashEndpoints();
+app.MapGroup("/api/admin/host").MapDockerHostEndpoints();
 app.MapSqlAdminEndpoints();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
@@ -288,6 +290,10 @@ static async Task SeedAdminAsync(AppDbContext db, AdminSeedOptions adminSeed)
     await db.SaveChangesAsync();
 }
 
+/// <summary>
+/// Catálogo inicial de una instalación nueva: los productos de Data/Seed/products.json (los de Ahora que se
+/// pueden desplegar con imágenes publicadas, con los logos en /products/). Solo si aún no hay ninguno.
+/// </summary>
 static async Task SeedProductsAsync(AppDbContext db)
 {
     if (await db.Products.AnyAsync())
@@ -295,73 +301,28 @@ static async Task SeedProductsAsync(AppDbContext db)
         return;
     }
 
+    var file = Path.Combine(AppContext.BaseDirectory, "Data", "Seed", "products.json");
+    if (!File.Exists(file))
+    {
+        return;
+    }
+
     var jsonOptions = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
+    var seeds = System.Text.Json.JsonSerializer.Deserialize<List<SeedProduct>>(await File.ReadAllTextAsync(file), jsonOptions) ?? [];
 
-    string SerializeSchema(List<EnvVarDefinition> schema) =>
-        System.Text.Json.JsonSerializer.Serialize(schema, jsonOptions);
-
-    var nextcloud = new Product
+    db.Products.AddRange(seeds.Select(seed => new Product
     {
-        Name = "Nextcloud",
-        Description = "Almacenamiento en la nube y colaboración de archivos, autoalojado.",
-        ImageUrl = "https://upload.wikimedia.org/wikipedia/commons/6/60/Nextcloud_Logo.svg",
-        WebsiteUrl = "https://nextcloud.com",
-        ComposeTemplate = """
-            services:
-              app:
-                image: nextcloud:latest
-                environment:
-                  NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
-                  NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
-                networks:
-                  - proxy
-                labels:
-                  - traefik.enable=true
-                  - traefik.docker.network=proxy
-                  - traefik.http.routers.${APP_SUBDOMAIN}.rule=Host(`${APP_SUBDOMAIN}.${BASE_DOMAIN}`)
-            networks:
-              proxy:
-                external: true
-            """,
-        EnvVarsSchemaJson = SerializeSchema(
-        [
-            new EnvVarDefinition { Key = "NEXTCLOUD_ADMIN_USER", Label = "Usuario admin", DefaultValue = "admin", Mode = EnvVarInputMode.Text },
-            new EnvVarDefinition { Key = "NEXTCLOUD_ADMIN_PASSWORD", Label = "Contraseña admin", DefaultValue = "changeme", Mode = EnvVarInputMode.Secret }
-        ])
-    };
-
-    var whoami = new Product
-    {
-        Name = "whoami",
-        Description = "Servidor HTTP mínimo que devuelve información de la petición y del contenedor. Útil para probar despliegues y enrutado.",
-        ImageUrl = "https://upload.wikimedia.org/wikipedia/commons/1/1e/Traefik_Logo.svg",
-        WebsiteUrl = "https://github.com/traefik/whoami",
-        ComposeTemplate = """
-            services:
-              app:
-                image: traefik/whoami:latest
-                environment:
-                  WHOAMI_NAME: ${WHOAMI_NAME}
-                networks:
-                  - proxy
-                labels:
-                  - traefik.enable=true
-                  - traefik.docker.network=proxy
-                  - traefik.http.routers.${APP_SUBDOMAIN}.rule=Host(`${APP_SUBDOMAIN}.${BASE_DOMAIN}`)
-                  - traefik.http.services.${APP_SUBDOMAIN}.loadbalancer.server.port=80
-            networks:
-              proxy:
-                external: true
-            """,
-        EnvVarsSchemaJson = SerializeSchema(
-        [
-            new EnvVarDefinition { Key = "WHOAMI_NAME", Label = "Nombre mostrado", DefaultValue = "ahora-cenit-demo", Mode = EnvVarInputMode.Text }
-        ])
-    };
-
-    db.Products.AddRange(nextcloud, whoami);
+        Name = seed.Name,
+        Description = seed.Description,
+        ImageUrl = seed.ImageUrl,
+        WebsiteUrl = seed.WebsiteUrl,
+        ComposeTemplate = seed.ComposeTemplate,
+        EnvVarsSchemaJson = System.Text.Json.JsonSerializer.Serialize(seed.EnvVarsSchema, jsonOptions)
+    }));
     await db.SaveChangesAsync();
 }
+
+record SeedProduct(string Name, string Description, string ImageUrl, string WebsiteUrl, string ComposeTemplate, List<EnvVarDefinition> EnvVarsSchema);
 
 // Exposed for WebApplicationFactory-based integration testing, if ever needed.
 public partial class Program;

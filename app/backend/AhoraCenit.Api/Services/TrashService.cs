@@ -89,7 +89,7 @@ public class TrashService(
         }
 
         application.DeletedAt = null;
-        application.Status = ApplicationStatus.Running;
+        application.Status = ApplicationStatus.Starting;
         application.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
         return null;

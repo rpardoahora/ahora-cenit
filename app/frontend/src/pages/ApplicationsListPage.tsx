@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
 import { StatusBadge } from "@/components/StatusBadge"
+import { StartupProgressView } from "@/components/StartupProgressView"
 import { DeleteApplicationDialog } from "@/components/DeleteApplicationDialog"
 
 export function ApplicationsListPage() {
@@ -44,9 +45,9 @@ export function ApplicationsListPage() {
       if (app.portainerStackId === null) continue
       applicationsApi
         .status(app.id)
-        .then(({ status }) => {
+        .then(({ status, startup }) => {
           setApplications((prev) =>
-            prev ? prev.map((a) => (a.id === app.id ? { ...a, status } : a)) : prev
+            prev ? prev.map((a) => (a.id === app.id ? { ...a, status, startup } : a)) : prev
           )
         })
         .catch(() => {
@@ -64,7 +65,7 @@ export function ApplicationsListPage() {
   // error (que puede deberse a un timeout aunque el despliegue terminara bien en
   // Portainer), sigue refrescando su estado sin que el usuario tenga que recargar la
   // página ni pulsar nada.
-  const pollableStatuses = ["Deploying", "Provisioning", "Error"]
+  const pollableStatuses = ["Deploying", "Provisioning", "Starting", "Error"]
   useEffect(() => {
     const interval = setInterval(() => {
       setApplications((prev) => {
@@ -161,13 +162,14 @@ export function ApplicationsListPage() {
                 {isAdmin && <TableCell>{app.ownerName}</TableCell>}
                 <TableCell>
                   <StatusBadge status={app.status} />
+                  {app.status === "Starting" && app.startup && <StartupProgressView progress={app.startup} compact />}
                 </TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-1.5">
                     <Button size="sm" variant="outline" render={<Link to={`/aplicaciones/${app.id}`} />}>
                       Ver
                     </Button>
-                    {app.status === "Running" || app.status === "Provisioning" ? (
+                    {app.status === "Running" || app.status === "Provisioning" || app.status === "Starting" ? (
                       <Button size="sm" variant="outline" onClick={() => handleStop(app)}>
                         Parar
                       </Button>

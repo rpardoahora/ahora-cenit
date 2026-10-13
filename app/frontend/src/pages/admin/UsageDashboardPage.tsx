@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
-import { applicationsApi } from "@/lib/api"
+import { applicationsApi, dockerHostApi } from "@/lib/api"
 import { formatBytes, formatPercent } from "@/lib/format"
-import type { ApplicationUsage } from "@/types"
+import type { ApplicationUsage, DockerHost } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
@@ -16,6 +16,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { StatTile } from "@/components/StatTile"
 import { UsageBarChart } from "@/components/UsageBarChart"
+import { DockerHostPanel } from "@/components/DockerHostPanel"
 
 interface ClientAggregate {
   clientSlug: string
@@ -53,10 +54,16 @@ function aggregateByClient(usage: ApplicationUsage[]): ClientAggregate[] {
 
 export function UsageDashboardPage() {
   const [usage, setUsage] = useState<ApplicationUsage[] | null>(null)
+  const [host, setHost] = useState<DockerHost | null>(null)
   const [loading, setLoading] = useState(true)
 
   async function load() {
     setLoading(true)
+    // La máquina y las aplicaciones se piden a la vez; cada bloque se pinta en cuanto llega el suyo.
+    const hostRequest = dockerHostApi
+      .get()
+      .then(setHost)
+      .catch(() => toast.error("No se pudo leer el estado de la máquina Docker."))
     try {
       const data = await applicationsApi.usage()
       setUsage(data)
@@ -64,6 +71,7 @@ export function UsageDashboardPage() {
       toast.error("No se pudo cargar el consumo de recursos.")
       setUsage([])
     } finally {
+      await hostRequest
       setLoading(false)
     }
   }
@@ -99,13 +107,21 @@ export function UsageDashboardPage() {
         <div>
           <h1 className="font-heading text-2xl font-semibold">Consumo de recursos</h1>
           <p className="text-sm text-muted-foreground">
-            CPU, RAM y disco de cada aplicación desplegada, en tiempo real desde Docker.
+            La máquina Docker y la CPU, RAM y disco de cada aplicación desplegada, en tiempo real.
           </p>
         </div>
         <Button variant="outline" onClick={load} disabled={loading}>
           {loading ? "Actualizando..." : "Actualizar"}
         </Button>
       </div>
+
+      {host ? (
+        <DockerHostPanel host={host} appsMemoryBytes={usage?.length ? totalMemory : null} />
+      ) : (
+        loading && <Skeleton className="h-40 w-full" />
+      )}
+
+      <h2 className="font-heading text-lg font-semibold">Aplicaciones</h2>
 
       {loading && usage === null && (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">

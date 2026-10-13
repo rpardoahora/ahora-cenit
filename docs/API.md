@@ -243,9 +243,49 @@ instalación (en local, p. ej. `http://mi-erp-acme.ahoracenit.localhost:8880`).
 despliegue. Si pasado ese tiempo sigue ocupado responden `409` (se puede
 reintentar); cualquier otro fallo de Portainer es `502`.
 
-Estados (`status`): `Deploying`, `Running`, `Provisioning` (arrancada,
-esperando el certificado HTTPS), `Stopped`, `Error`, `Deleted` (sus
-contenedores ya no existen: se borraron fuera del portal).
+Estados (`status`): `Deploying`, `Starting` (contenedores arriba pero la
+aplicación aún no responde del todo: en un Flexygo, hasta que su
+`deployment-status` da frontend, backend y base de datos con versión,
+`/api/Setup/ready` confirma que acabó la instalación desatendida y la web no
+está en mantenimiento; no se puede abrir todavía), `Running`, `Provisioning` (arrancada, esperando el
+certificado HTTPS), `Stopped`, `Error`, `Deleted` (sus contenedores ya no
+existen: se borraron fuera del portal). Tras desplegar, arrancar o restaurar
+queda en `Starting`; `GET /api/applications/{id}/status` lo actualiza.
+
+Mientras está en `Starting`, la respuesta de `GET /api/applications/{id}/status`
+trae `startup`, con lo que está haciendo:
+
+```json
+"startup": {
+  "title": "Instalando la base de datos de configuración (acme_flxCatalog_IC): creando las tablas y objetos",
+  "detail": "Tabla [dbo].[Objects]",
+  "step": 4,
+  "stepCount": 6,
+  "isError": false
+}
+```
+
+`step` y `stepCount` solo vienen cuando hay pasos contables: los de la
+instalación de cada base de datos de un Flexygo, sacados de su
+`/api/Setup/progress`. En el resto de casos (contenedores arrancando, SQL
+Server preparándose, la aplicación sin responder todavía) solo viene `title`.
+`isError: true` indica algo que no se arreglará solo: un servicio que se
+reinicia en bucle, uno que no pasa su comprobación de salud o una instalación
+de Flexygo que ha fallado.
+
+---
+
+## Consumo (administrador)
+
+| Método y ruta | Qué hace |
+|---|---|
+| `GET /api/applications/usage` | CPU, RAM, disco y contenedores de cada aplicación desplegada. |
+| `GET /api/admin/host` | La máquina Docker: `usage` (CPU %, carga media, RAM y disco usados y totales, segundos encendida; cada valor es `null` si no se pudo leer) y `docker` (núcleos, memoria, sistema, versión, contenedores, imágenes y bytes de imágenes, volúmenes, contenedores y caché de build). |
+
+`usage` lo lee el portal del kernel de la máquina en la que corre (`/proc`;
+en Docker Desktop, la máquina virtual de Docker) y el disco es el que guarda
+los datos de Docker. Tarda alrededor de un segundo (mide la CPU en ese
+intervalo).
 
 ---
 

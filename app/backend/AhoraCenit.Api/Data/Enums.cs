@@ -19,5 +19,11 @@ public enum ApplicationStatus
     /// el certificado TLS del subdominio (solo aplica cuando BaseDomain no es
     /// un dominio local de desarrollo).
     /// </summary>
-    Provisioning = 5
+    Provisioning = 5,
+
+    /// <summary>
+    /// Los contenedores están arriba pero la aplicación todavía no responde del todo (arrancando o, en un Flexygo,
+    /// instalando su base de datos): aún no se puede abrir.
+    /// </summary>
+    Starting = 6
 }

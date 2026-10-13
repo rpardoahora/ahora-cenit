@@ -38,7 +38,9 @@ public record ApplicationResponse(
     int? PortainerStackId,
     int PortainerEndpointId,
     DateTime CreatedAt,
-    DateTime UpdatedAt);
+    DateTime UpdatedAt,
+    // Mientras está en Starting (o en Error por un servicio que no arranca): por dónde va. Solo lo trae el refresco de estado.
+    AhoraCenit.Api.Services.StartupProgress? Startup = null);
 
 public record ApplicationUsageResponse(
     Guid ApplicationId,

@@ -6,8 +6,8 @@ import type {
   AdminUser,
   AppConfig,
   Application,
-  ApplicationStatus,
   ApplicationUsage,
+  DockerHost,
   AuthResponse,
   CreateApplicationInput,
   CreateUserInput,
@@ -142,6 +142,10 @@ export const sqlAdminApi = {
 
 // ---------- Papelera ----------
 
+export const dockerHostApi = {
+  get: () => request<DockerHost>("/admin/host"),
+}
+
 export const trashApi = {
   list: () => request<Trash>("/admin/trash"),
   purgeExpired: () => request<{ applications: number; users: number }>("/admin/trash/purge-expired", { method: "POST" }),
@@ -237,7 +241,7 @@ export const applicationsApi = {
   create: (input: CreateApplicationInput) =>
     request<Application>("/applications", { method: "POST", body: input }),
   status: (id: string) =>
-    request<{ status: ApplicationStatus }>(`/applications/${id}/status`, {
+    request<Pick<Application, "status" | "startup">>(`/applications/${id}/status`, {
       silent: true,
     }),
   start: (id: string) =>

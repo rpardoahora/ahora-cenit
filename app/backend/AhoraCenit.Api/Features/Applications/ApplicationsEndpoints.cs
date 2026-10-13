@@ -329,9 +329,8 @@ public static class ApplicationsEndpoints
             application.PortainerEndpointId = result.EndpointId;
             // Recién creado: el certificado TLS (si aplica) nunca está listo todavía,
             // así que no merece la pena comprobarlo por red aquí; lo hará el primer refresh.
-            application.Status = TlsStatus.RequiresCertificateCheck(baseDomain)
-                ? ApplicationStatus.Provisioning
-                : ApplicationStatus.Running;
+            // Arrancando hasta que la aplicación responda de verdad (lo comprueba el refresco de estado).
+            application.Status = ApplicationStatus.Starting;
             application.UpdatedAt = DateTime.UtcNow;
             sw.Stop();
             db.DeploymentDurationSamples.Add(new DeploymentDurationSample
@@ -513,16 +512,27 @@ public static class ApplicationsEndpoints
             return Results.Ok(ToResponse(application, configuration));
         }
 
+        StartupProgress? startup = null;
         if (status == ApplicationStatus.Running)
         {
-            status = await ResolveRunningStatusAsync(application.Subdomain, baseDomain, ct);
+            // Contenedores arriba no es "lista": hasta que responda del todo, sigue arrancando (y se cuenta por dónde va).
+            var readiness = await portainerClient.GetStackReadinessAsync(application.PortainerEndpointId, application.Subdomain, ct);
+            if (readiness.Ready == false)
+            {
+                status = ApplicationStatus.Starting;
+                startup = readiness.Progress;
+            }
+            else
+            {
+                status = await ResolveRunningStatusAsync(application.Subdomain, baseDomain, ct);
+            }
         }
 
         application.Status = status.Value;
         application.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
 
-        return Results.Ok(ToResponse(application, configuration));
+        return Results.Ok(ToResponse(application, configuration, startup));
     }
 
     /// <summary>
@@ -636,7 +646,7 @@ public static class ApplicationsEndpoints
             return StackActionFailed("No se pudo iniciar la aplicación.", result);
         }
 
-        application.Status = await ResolveRunningStatusAsync(application.Subdomain, GetBaseDomain(configuration), ct);
+        application.Status = ApplicationStatus.Starting;
         application.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
 
@@ -800,7 +810,7 @@ public static class ApplicationsEndpoints
         return $"{scheme}://{fullDomain}{portSuffix}";
     }
 
-    private static ApplicationResponse ToResponse(Application application, IConfiguration configuration)
+    private static ApplicationResponse ToResponse(Application application, IConfiguration configuration, StartupProgress? startup = null)
     {
         var fullDomain = $"{application.Subdomain}.{GetBaseDomain(configuration)}";
         var envVars = string.IsNullOrWhiteSpace(application.EnvVarValuesJson)
@@ -822,6 +832,7 @@ public static class ApplicationsEndpoints
             application.PortainerStackId,
             application.PortainerEndpointId,
             application.CreatedAt,
-            application.UpdatedAt);
+            application.UpdatedAt,
+            startup);
     }
 }

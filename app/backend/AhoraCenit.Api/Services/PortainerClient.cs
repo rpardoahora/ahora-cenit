@@ -13,6 +13,23 @@ public record PortainerCreateStackResult(bool Success, int? StackId, int Endpoin
 public record PortainerOperationResult(bool Success, string? ErrorMessage, bool Busy = false);
 
 /// <summary>Consumo agregado de recursos de todos los contenedores de un stack.</summary>
+/// <summary>La máquina Docker: lo que cuenta su /info y el espacio de su /system/df.</summary>
+public record DockerHostInfo(
+    int Cpus,
+    long MemoryBytes,
+    string OperatingSystem,
+    string KernelVersion,
+    string DockerVersion,
+    int Containers,
+    int ContainersRunning,
+    int Images,
+    long ImagesBytes,
+    long VolumesBytes,
+    long ContainersBytes,
+    long BuildCacheBytes);
+
+public record StackReadiness(bool? Ready, StartupProgress? Progress = null);
+
 public record StackResourceUsage(double CpuPercent, long MemoryUsageBytes, long DiskUsageBytes, int ContainerCount);
 
 /// <summary>
@@ -79,6 +96,17 @@ public interface IPortainerClient
     /// muestra para calcular el % de CPU).
     /// </summary>
     Task<StackResourceUsage> GetStackResourceUsageAsync(int endpointId, string stackName, CancellationToken ct = default);
+
+    /// <summary>Datos de la máquina Docker del endpoint (null si Portainer no responde).</summary>
+    Task<DockerHostInfo?> GetDockerHostAsync(int endpointId, CancellationToken ct = default);
+
+    /// <summary>
+    /// ¿Responde ya la aplicación? Con los contenedores arriba, mira su HEALTHCHECK (si lo tienen) y consulta su
+    /// web por la red interna: en un Flexygo, su deployment-status (frontend, backend y base de datos con versión);
+    /// en otra aplicación, que la web conteste sin error 5xx. Ready es null si no se puede saber; si no está lista,
+    /// Progress dice por dónde va (en un Flexygo, el progreso de su instalación).
+    /// </summary>
+    Task<StackReadiness> GetStackReadinessAsync(int endpointId, string stackName, CancellationToken ct = default);
 
     /// <summary>Imagen con la que corre cada servicio del stack (null si Portainer no responde).</summary>
     Task<IReadOnlyList<StackServiceImage>?> ListStackImagesAsync(int endpointId, string stackName, CancellationToken ct = default);
@@ -257,7 +285,138 @@ public class PortainerClient : IPortainerClient
         return containers.Any(c => c.State == "running") ? ApplicationStatus.Running : ApplicationStatus.Stopped;
     }
 
-    /// <summary>Contenedores Docker (de cualquier estado) que pertenecen al stack de compose dado.</summary>
+    private static readonly HttpClient ProbeClient = new() { Timeout = TimeSpan.FromSeconds(20) };
+
+    public async Task<StackReadiness> GetStackReadinessAsync(int endpointId, string stackName, CancellationToken ct = default)
+    {
+        var containers = await ListStackContainersAsync(endpointId, stackName, ct);
+        if (containers is null)
+        {
+            return new StackReadiness(null);
+        }
+
+        static string ServiceOf(DockerContainerSummaryDto c) =>
+            c.Labels?.GetValueOrDefault("com.docker.compose.service") ?? c.Names?.FirstOrDefault()?.TrimStart('/') ?? c.Id;
+
+        var restarting = containers.FirstOrDefault(c => c.State == "restarting" || c.Status.StartsWith("Restarting", StringComparison.OrdinalIgnoreCase));
+        if (restarting is not null)
+        {
+            return new StackReadiness(false, new StartupProgress(
+                $"El servicio «{ServiceOf(restarting)}» se para y se vuelve a arrancar una y otra vez",
+                "Algo le impide arrancar; su log (en Portainer) dice por qué.", IsError: true));
+        }
+
+        var running = containers.Where(c => c.State == "running").ToList();
+        // Un servicio web (publicado por Traefik) que aún no corre: todavía no se puede abrir.
+        var webStopped = containers.Any(c => c.State != "running" && c.Labels?.GetValueOrDefault("traefik.enable") == "true");
+        if (running.Count == 0 || webStopped)
+        {
+            return new StackReadiness(false, new StartupProgress($"Arrancando los contenedores ({running.Count} de {containers.Count} en marcha)"));
+        }
+
+        var waiting = running.FirstOrDefault(c => c.Status.Contains("health: starting", StringComparison.OrdinalIgnoreCase));
+        if (waiting is not null)
+        {
+            var isSql = waiting.Image.Contains("mssql", StringComparison.OrdinalIgnoreCase) || waiting.Image.Contains("-db:", StringComparison.OrdinalIgnoreCase);
+            return new StackReadiness(false, new StartupProgress(isSql ? "Esperando a que arranque SQL Server" : $"Esperando a que «{ServiceOf(waiting)}» esté listo"));
+        }
+
+        var unhealthy = running.FirstOrDefault(c => c.Status.Contains("unhealthy", StringComparison.OrdinalIgnoreCase));
+        if (unhealthy is not null)
+        {
+            return new StackReadiness(false, new StartupProgress($"«{ServiceOf(unhealthy)}» no pasa su comprobación de salud", IsError: true));
+        }
+
+        // El servicio web es el que publica Traefik; se le consulta directamente por la red proxy.
+        var web = running
+            .Select(c => (Container: c, Port: c.Labels?.FirstOrDefault(l => l.Key.StartsWith("traefik.http.services.", StringComparison.Ordinal)
+                                                                           && l.Key.EndsWith(".loadbalancer.server.port", StringComparison.Ordinal)).Value))
+            .FirstOrDefault(x => !string.IsNullOrEmpty(x.Port) && x.Container.Labels?.GetValueOrDefault("traefik.enable") == "true");
+        if (web.Container is null || string.IsNullOrEmpty(web.Container.Names?.FirstOrDefault()))
+        {
+            return new StackReadiness(true);
+        }
+
+        var baseUrl = $"http://{web.Container.Names![0].TrimStart('/')}:{web.Port}";
+        var notResponding = new StackReadiness(false, new StartupProgress("Esperando a que la aplicación responda"));
+        try
+        {
+            using var status = await ProbeClient.GetAsync($"{baseUrl}/api/frontend/sys/deployment-status", ct);
+            if (status.Content.Headers.ContentType?.MediaType?.Contains("json", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                using var json = JsonDocument.Parse(await status.Content.ReadAsStringAsync(ct));
+                // Un Flexygo contesta con su estado o, mientras instala una base de datos, con el aviso de mantenimiento.
+                var isFlexygo = json.RootElement.ValueKind == JsonValueKind.Object
+                                && (json.RootElement.TryGetProperty("Frontend", out _) || json.RootElement.TryGetProperty("maintenance", out _));
+                if (isFlexygo)
+                {
+                    bool Reachable(string part) =>
+                        json.RootElement.TryGetProperty(part, out var p) && p.TryGetProperty("IsReachable", out var r) && r.ValueKind == JsonValueKind.True;
+                    var databaseVersion = json.RootElement.TryGetProperty("Database", out var db) && db.TryGetProperty("Version", out var v)
+                        ? v.GetString() : null;
+                    if (!status.IsSuccessStatusCode || !Reachable("Frontend") || !Reachable("Backend") || !Reachable("Database") || string.IsNullOrEmpty(databaseVersion))
+                    {
+                        return new StackReadiness(false, await FlexygoProgressAsync(baseUrl, ct));
+                    }
+
+                    // La base de datos tiene versión antes de que acabe la instalación desatendida: Setup/ready (que el
+                    // frontend reenvía al backend) da 503 hasta entonces. Las versiones que no lo tienen dan 404.
+                    using var setup = await ProbeClient.GetAsync($"{baseUrl}/api/Setup/ready", ct);
+                    if (setup.StatusCode != System.Net.HttpStatusCode.NotFound && !setup.IsSuccessStatusCode)
+                    {
+                        return new StackReadiness(false, await FlexygoProgressAsync(baseUrl, ct));
+                    }
+                }
+            }
+
+            // Pedida como API, la web contesta 503 mientras está en mantenimiento (p. ej. aplicando un paquete de BBDD).
+            using var request = new HttpRequestMessage(HttpMethod.Get, baseUrl + "/");
+            request.Headers.Accept.ParseAdd("application/json");
+            using var home = await ProbeClient.SendAsync(request, ct);
+            return (int)home.StatusCode < 500 ? new StackReadiness(true) : notResponding;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            return notResponding;
+        }
+    }
+
+    /// <summary>Progreso de la instalación de un Flexygo (GET /api/Setup/progress, que el frontend reenvía al backend).</summary>
+    private static async Task<StartupProgress> FlexygoProgressAsync(string baseUrl, CancellationToken ct)
+    {
+        var waiting = new StartupProgress("Esperando a que la aplicación responda");
+        try
+        {
+            using var response = await ProbeClient.GetAsync($"{baseUrl}/api/Setup/progress", ct);
+            var body = await response.Content.ReadAsStringAsync(ct);
+
+            if (response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable)
+            {
+                // Mientras despliega las bases de datos de datos, Flexygo entra en mantenimiento y no deja pasar ni la
+                // consulta del progreso.
+                return new StartupProgress(
+                    "Instalando las bases de datos de datos",
+                    "Flexygo está en mantenimiento mientras las despliega y no informa del avance de esta fase.");
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return body.Contains("Backend unavailable", StringComparison.OrdinalIgnoreCase)
+                    ? new StartupProgress("Arrancando el backend de la aplicación")
+                    : waiting;
+            }
+
+            using var json = JsonDocument.Parse(body);
+            return json.RootElement.ValueKind == JsonValueKind.Object && json.RootElement.TryGetProperty("Status", out _)
+                ? FlexygoSetupProgress.Describe(json.RootElement)
+                : waiting;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            return waiting;
+        }
+    }
+
     public async Task<IReadOnlyList<StackServiceImage>?> ListStackImagesAsync(int endpointId, string stackName, CancellationToken ct = default)
     {
         var containers = await ListStackContainersAsync(endpointId, stackName, ct);
@@ -270,6 +429,7 @@ public class PortainerClient : IPortainerClient
             .ToList();
     }
 
+    /// <summary>Contenedores Docker (de cualquier estado) que pertenecen al stack de compose dado.</summary>
     private async Task<List<DockerContainerSummaryDto>?> ListStackContainersAsync(int endpointId, string stackName, CancellationToken ct)
     {
         try
@@ -314,6 +474,74 @@ public class PortainerClient : IPortainerClient
             MemoryUsageBytes: valid.Sum(u => u.MemoryUsageBytes),
             DiskUsageBytes: valid.Sum(u => u.DiskUsageBytes),
             ContainerCount: valid.Count);
+    }
+
+    public async Task<DockerHostInfo?> GetDockerHostAsync(int endpointId, CancellationToken ct = default)
+    {
+        try
+        {
+            // /system/df se pide por tipo: sin filtro, un fallo al medir las imágenes (p. ej. un snapshot de
+            // containerd que ya no existe) hace fallar la consulta entera y se perderían también las demás.
+            var infoTask = _httpClient.GetAsync($"api/endpoints/{endpointId}/docker/info", ct);
+            var imagesTask = DiskUsageAsync(endpointId, "image", df => Long(df, "LayersSize"), ct);
+            var volumesTask = DiskUsageAsync(endpointId, "volume", df => Sum(df, "Volumes", v => v.TryGetProperty("UsageData", out var u) ? Long(u, "Size") : 0), ct);
+            var containersTask = DiskUsageAsync(endpointId, "container", df => Sum(df, "Containers", c => Long(c, "SizeRw")), ct);
+            var buildCacheTask = DiskUsageAsync(endpointId, "build-cache", df => Sum(df, "BuildCache", b => Long(b, "Size")), ct);
+            using var infoResponse = await infoTask;
+            if (!infoResponse.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            using var info = JsonDocument.Parse(await infoResponse.Content.ReadAsStringAsync(ct));
+            var root = info.RootElement;
+            int Int(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : 0;
+            string Text(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+
+            return new DockerHostInfo(
+                Int("NCPU"),
+                root.TryGetProperty("MemTotal", out var mem) && mem.ValueKind == JsonValueKind.Number ? mem.GetInt64() : 0,
+                Text("OperatingSystem"),
+                Text("KernelVersion"),
+                Text("ServerVersion"),
+                Int("Containers"),
+                Int("ContainersRunning"),
+                Int("Images"),
+                await imagesTask,
+                await volumesTask,
+                await containersTask,
+                await buildCacheTask);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            return null;
+        }
+
+        static long Long(JsonElement e, string name) =>
+            e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? Math.Max(0, v.GetInt64()) : 0;
+
+        static long Sum(JsonElement df, string list, Func<JsonElement, long> size) =>
+            df.TryGetProperty(list, out var items) && items.ValueKind == JsonValueKind.Array ? items.EnumerateArray().Sum(size) : 0;
+    }
+
+    /// <summary>Bytes de un tipo de /system/df (0 si Docker no lo puede calcular).</summary>
+    private async Task<long> DiskUsageAsync(int endpointId, string type, Func<JsonElement, long> bytes, CancellationToken ct)
+    {
+        try
+        {
+            using var response = await _httpClient.GetAsync($"api/endpoints/{endpointId}/docker/system/df?type={type}", ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                return 0;
+            }
+
+            using var df = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            return bytes(df.RootElement);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            return 0;
+        }
     }
 
     // Con stream=false, Docker a veces devuelve precpu_stats == cpu_stats (delta 0) si no
@@ -609,6 +837,13 @@ public class PortainerClient : IPortainerClient
 
         [JsonPropertyName("Labels")]
         public Dictionary<string, string>? Labels { get; set; }
+
+        /// <summary>"Up 2 minutes (health: starting)".</summary>
+        [JsonPropertyName("Status")]
+        public string Status { get; set; } = string.Empty;
+
+        [JsonPropertyName("Names")]
+        public List<string>? Names { get; set; }
     }
 
     private class DockerVolumesListDto

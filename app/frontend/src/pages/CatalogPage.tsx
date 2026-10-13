@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { PackageIcon } from "@hugeicons/core-free-icons"
 import { productsApi } from "@/lib/api"
 import { useAuth } from "@/context/AuthContext"
 import { useConfig } from "@/context/ConfigContext"
@@ -16,6 +18,31 @@ import { Skeleton } from "@/components/ui/skeleton"
 
 function openWebsitePopup(url: string) {
   window.open(url, "_blank", "noopener,noreferrer,width=1100,height=800")
+}
+
+/** Imagen del producto o, si no tiene o no carga, un icono genérico. */
+function ProductImage({ product }: { product: Product }) {
+  const [failed, setFailed] = useState(false)
+
+  if (!product.imageUrl || failed) {
+    return (
+      <HugeiconsIcon
+        icon={PackageIcon}
+        className="size-16 text-muted-foreground/60"
+        strokeWidth={1.5}
+        aria-label={product.name}
+      />
+    )
+  }
+
+  return (
+    <img
+      src={product.imageUrl}
+      alt={product.name}
+      className="max-h-full max-w-full object-contain"
+      onError={() => setFailed(true)}
+    />
+  )
 }
 
 export function CatalogPage() {
@@ -67,11 +94,7 @@ export function CatalogPage() {
           {products.map((product) => (
             <Card key={product.id} className="h-full overflow-hidden">
               <div className="flex h-40 w-full items-center justify-center bg-muted/30 p-6">
-                <img
-                  src={product.imageUrl}
-                  alt={product.name}
-                  className="max-h-full max-w-full object-contain"
-                />
+                <ProductImage product={product} />
               </div>
               <CardHeader className="flex-1">
                 <CardTitle>{product.name}</CardTitle>

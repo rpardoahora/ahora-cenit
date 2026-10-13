@@ -1,0 +1,68 @@
+[
+  {
+    "name": "Flexygo",
+    "description": "Plataforma de desarrollo low-code.",
+    "imageUrl": "/products/flexygo.png",
+    "websiteUrl": "",
+    "composeTemplate": "services:\n  flexygo-frontend:\n    image: flexygo/flexygo-frontend:latest\n    restart: unless-stopped\n    environment:\n      ASPNETCORE_ENVIRONMENT: Development\n      BackendEndpoint: http://flexygo-backend:8080/api/backend/\n    volumes:\n      - front-conf:/app/conf\n      - front-custom:/app/custom\n    networks:\n      - proxy\n      - default\n    depends_on:\n      - flexygo-backend\n    labels:\n      - traefik.enable=true\n      - traefik.docker.network=proxy\n      - traefik.http.routers.${APP_SUBDOMAIN}.rule=Host(`${APP_SUBDOMAIN}.${BASE_DOMAIN}`)\n      - traefik.http.services.${APP_SUBDOMAIN}.loadbalancer.server.port=8080\n  flexygo-backend:\n    image: flexygo/flexygo-backend:latest\n    restart: unless-stopped\n    environment:\n      ASPNETCORE_ENVIRONMENT: Development\n      MSSQL_SA_PASSWORD: ${SQL_PASSWORD}\n      FrontendEndpoint: http://flexygo-frontend:8080\n      ConnectionStrings__ConfConnectionString: Server=flexygo-db;Integrated Security=false;Initial Catalog=Flexygo_IC;User ID=sa;Password=${SQL_PASSWORD};Encrypt=False;TrustServerCertificate=True\n      ConnectionStrings__DataConnectionString: Server=flexygo-db;Integrated Security=false;Initial Catalog=Flexygo_I;User ID=sa;Password=${SQL_PASSWORD};Encrypt=False;TrustServerCertificate=True\n      DatabaseNuget__PackageId: Flexygo.Conf.Database\n      DatabaseNuget__NugetUrl: https://nuget.ahorabh.com/v3/index.json\n    volumes:\n      - back-conf:/app/conf\n      - back-custom:/app/custom\n    extra_hosts:\n      - host.docker.internal:host-gateway\n    depends_on:\n      flexygo-db:\n        condition: service_healthy\n  flexygo-db:\n    image: flexygo/flexygo-db:latest\n    restart: unless-stopped\n    environment:\n      ACCEPT_EULA: \"Y\"\n      MSSQL_SA_PASSWORD: ${SQL_PASSWORD}\n      MSSQL_PID: Express\n    volumes:\n      - db-data:/var/opt/mssql/data\n      - db-log:/var/opt/mssql/log\n      - db-secrets:/var/opt/mssql/secrets\nvolumes:\n  front-conf:\n  front-custom:\n  back-conf:\n  back-custom:\n  db-data:\n  db-log:\n  db-secrets:\nnetworks:\n  proxy:\n    external: true\n",
+    "envVarsSchema": [
+      {
+        "key": "SQL_PASSWORD",
+        "label": "Contraseña de la base de datos (sa): 8 caracteres o más, con mayúsculas, minúsculas y números",
+        "defaultValue": "",
+        "mode": "Secret"
+      }
+    ]
+  },
+  {
+    "name": "SAT",
+    "description": "Servicio de asistencia técnica: partes de trabajo, técnicos y app móvil. Trabaja sobre la base de datos del ERP.",
+    "imageUrl": "/products/sat.png",
+    "websiteUrl": "",
+    "composeTemplate": "services:\n  flxsat-frontend:\n    image: flexygo/flxsat-frontend:latest\n    restart: unless-stopped\n    environment:\n      ASPNETCORE_ENVIRONMENT: Development\n      BackendEndpoint: http://flxsat-backend:8080/api/backend/\n    volumes:\n      - front-conf:/app/conf\n      - front-custom:/app/custom\n    networks:\n      - proxy\n      - default\n    depends_on:\n      - flxsat-backend\n    labels:\n      - traefik.enable=true\n      - traefik.docker.network=proxy\n      - traefik.http.routers.${APP_SUBDOMAIN}.rule=Host(`${APP_SUBDOMAIN}.${BASE_DOMAIN}`)\n      - traefik.http.services.${APP_SUBDOMAIN}.loadbalancer.server.port=8080\n  flxsat-backend:\n    image: flexygo/flxsat-backend:latest\n    restart: unless-stopped\n    environment:\n      ASPNETCORE_ENVIRONMENT: Development\n      MSSQL_SA_PASSWORD: ${SQL_PASSWORD}\n      FrontendEndpoint: http://flxsat-frontend:8080\n      ConnectionStrings__ConfConnectionString: Server=flxsat-db;Integrated Security=false;Initial Catalog=flxSAT_IC;User ID=sa;Password=${SQL_PASSWORD};Encrypt=False;TrustServerCertificate=True\n      ConnectionStrings__DataConnectionString: ${ERP_CONNECTION_STRING}\n      DatabaseNuget__PackageId: flxSAT.Conf.Database\n      DatabaseNuget__NugetUrl: https://nuget.ahorabh.com/v3/index.json\n    volumes:\n      - back-conf:/app/conf\n      - back-custom:/app/custom\n    extra_hosts:\n      - host.docker.internal:host-gateway\n    depends_on:\n      flxsat-db:\n        condition: service_healthy\n  flxsat-db:\n    image: flexygo/flxsat-db:latest\n    restart: unless-stopped\n    environment:\n      ACCEPT_EULA: \"Y\"\n      MSSQL_SA_PASSWORD: ${SQL_PASSWORD}\n      MSSQL_PID: Express\n    volumes:\n      - db-data:/var/opt/mssql/data\n      - db-log:/var/opt/mssql/log\n      - db-secrets:/var/opt/mssql/secrets\nvolumes:\n  front-conf:\n  front-custom:\n  back-conf:\n  back-custom:\n  db-data:\n  db-log:\n  db-secrets:\nnetworks:\n  proxy:\n    external: true\n",
+    "envVarsSchema": [
+      {
+        "key": "SQL_PASSWORD",
+        "label": "Contraseña de la base de datos (sa): 8 caracteres o más, con mayúsculas, minúsculas y números",
+        "defaultValue": "",
+        "mode": "Secret"
+      },
+      {
+        "key": "ERP_CONNECTION_STRING",
+        "label": "Cadena de conexión al SQL Server del ERP (si la dejas así, la pide la aplicación al arrancar)",
+        "defaultValue": "Server=host.docker.internal;Integrated Security=false;Initial Catalog=RENAME;User ID=sa;Password=;Encrypt=False;TrustServerCertificate=True",
+        "mode": "Text"
+      }
+    ]
+  },
+  {
+    "name": "Sebastian HR",
+    "description": "Gestión de recursos humanos (beta).",
+    "imageUrl": "/products/sebastian-hr.png",
+    "websiteUrl": "",
+    "composeTemplate": "services:\n  flxhr-frontend:\n    image: dockerbeta.ahorabh.com/flxhr-frontend:latest\n    restart: unless-stopped\n    environment:\n      ASPNETCORE_ENVIRONMENT: Development\n      BackendEndpoint: http://flxhr-backend:8080/api/backend/\n    volumes:\n      - front-conf:/app/conf\n      - front-custom:/app/custom\n    networks:\n      - proxy\n      - default\n    depends_on:\n      - flxhr-backend\n    labels:\n      - traefik.enable=true\n      - traefik.docker.network=proxy\n      - traefik.http.routers.${APP_SUBDOMAIN}.rule=Host(`${APP_SUBDOMAIN}.${BASE_DOMAIN}`)\n      - traefik.http.services.${APP_SUBDOMAIN}.loadbalancer.server.port=8080\n  flxhr-backend:\n    image: dockerbeta.ahorabh.com/flxhr-backend:latest\n    restart: unless-stopped\n    environment:\n      ASPNETCORE_ENVIRONMENT: Development\n      MSSQL_SA_PASSWORD: ${SQL_PASSWORD}\n      FrontendEndpoint: http://flxhr-frontend:8080\n      ConnectionStrings__ConfConnectionString: Server=flxhr-db;Integrated Security=false;Initial Catalog=Flexygo_HR_IC;User ID=sa;Password=${SQL_PASSWORD};Encrypt=False;TrustServerCertificate=True\n      ConnectionStrings__DataConnectionString: Server=flxhr-db;Integrated Security=false;Initial Catalog=Flexygo_HR_I;User ID=sa;Password=${SQL_PASSWORD};Encrypt=False;TrustServerCertificate=True\n      DatabaseNuget__PackageId: Flexygo_HR.Conf.Database\n      DatabaseNuget__NugetUrl: https://nuget.ahorabh.com/v3/index.json\n    volumes:\n      - back-conf:/app/conf\n      - back-custom:/app/custom\n    extra_hosts:\n      - host.docker.internal:host-gateway\n    depends_on:\n      flxhr-db:\n        condition: service_healthy\n  flxhr-db:\n    image: dockerbeta.ahorabh.com/flxhr-db:latest\n    restart: unless-stopped\n    environment:\n      ACCEPT_EULA: \"Y\"\n      MSSQL_SA_PASSWORD: ${SQL_PASSWORD}\n      MSSQL_PID: Express\n    volumes:\n      - db-data:/var/opt/mssql/data\n      - db-log:/var/opt/mssql/log\n      - db-secrets:/var/opt/mssql/secrets\nvolumes:\n  front-conf:\n  front-custom:\n  back-conf:\n  back-custom:\n  db-data:\n  db-log:\n  db-secrets:\nnetworks:\n  proxy:\n    external: true\n",
+    "envVarsSchema": [
+      {
+        "key": "SQL_PASSWORD",
+        "label": "Contraseña de la base de datos (sa): 8 caracteres o más, con mayúsculas, minúsculas y números",
+        "defaultValue": "",
+        "mode": "Secret"
+      }
+    ]
+  },
+  {
+    "name": "Recognizer",
+    "description": "Reconocimiento de facturas (beta).",
+    "imageUrl": "/products/recognizer.png",
+    "websiteUrl": "",
+    "composeTemplate": "services:\n  flxrecognizer-frontend:\n    image: dockerbeta.ahorabh.com/flxrecognizer-frontend:latest\n    restart: unless-stopped\n    environment:\n      ASPNETCORE_ENVIRONMENT: Development\n      BackendEndpoint: http://flxrecognizer-backend:8080/api/backend/\n    volumes:\n      - front-conf:/app/conf\n      - front-custom:/app/custom\n    networks:\n      - proxy\n      - default\n    depends_on:\n      - flxrecognizer-backend\n    labels:\n      - traefik.enable=true\n      - traefik.docker.network=proxy\n      - traefik.http.routers.${APP_SUBDOMAIN}.rule=Host(`${APP_SUBDOMAIN}.${BASE_DOMAIN}`)\n      - traefik.http.services.${APP_SUBDOMAIN}.loadbalancer.server.port=8080\n  flxrecognizer-backend:\n    image: dockerbeta.ahorabh.com/flxrecognizer-backend:latest\n    restart: unless-stopped\n    environment:\n      ASPNETCORE_ENVIRONMENT: Development\n      MSSQL_SA_PASSWORD: ${SQL_PASSWORD}\n      FrontendEndpoint: http://flxrecognizer-frontend:8080\n      ConnectionStrings__ConfConnectionString: Server=flxrecognizer-db;Integrated Security=false;Initial Catalog=RecognizerCore_IC;User ID=sa;Password=${SQL_PASSWORD};Encrypt=False;TrustServerCertificate=True\n      ConnectionStrings__DataConnectionString: Server=flxrecognizer-db;Integrated Security=false;Initial Catalog=RecognizerCore_I;User ID=sa;Password=${SQL_PASSWORD};Encrypt=False;TrustServerCertificate=True\n      DatabaseNuget__PackageId: RecognizerCore.Conf.Database\n      DatabaseNuget__NugetUrl: https://nuget.ahorabh.com/v3/index.json\n    volumes:\n      - back-conf:/app/conf\n      - back-custom:/app/custom\n    extra_hosts:\n      - host.docker.internal:host-gateway\n    depends_on:\n      flxrecognizer-db:\n        condition: service_healthy\n  flxrecognizer-db:\n    image: dockerbeta.ahorabh.com/flxrecognizer-db:latest\n    restart: unless-stopped\n    environment:\n      ACCEPT_EULA: \"Y\"\n      MSSQL_SA_PASSWORD: ${SQL_PASSWORD}\n      MSSQL_PID: Express\n    volumes:\n      - db-data:/var/opt/mssql/data\n      - db-log:/var/opt/mssql/log\n      - db-secrets:/var/opt/mssql/secrets\nvolumes:\n  front-conf:\n  front-custom:\n  back-conf:\n  back-custom:\n  db-data:\n  db-log:\n  db-secrets:\nnetworks:\n  proxy:\n    external: true\n",
+    "envVarsSchema": [
+      {
+        "key": "SQL_PASSWORD",
+        "label": "Contraseña de la base de datos (sa): 8 caracteres o más, con mayúsculas, minúsculas y números",
+        "defaultValue": "",
+        "mode": "Secret"
+      }
+    ]
+  }
+]

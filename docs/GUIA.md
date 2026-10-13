@@ -213,9 +213,15 @@ generada): `sudo ./install.sh --yes`.
 
 1. Abre el **portal** (`cloud.tudominio.com` o `http://cloud.localhost`) y
    entra con tu email y contraseña de administrador.
-2. En **Productos** da de alta el catálogo (vienen un par de ejemplos):
-   cada producto es un *docker-compose* (ver
-   [plantillas](#12-crear-plantillas-de-producto)).
+2. En **Productos** está el catálogo: cada producto es un *docker-compose*
+   (ver [plantillas](#12-crear-plantillas-de-producto)). Una instalación
+   nueva trae los productos de Ahora con imágenes publicadas: **Flexygo** y
+   **SAT** (Docker Hub) y **Sebastian HR** y **Recognizer** (registry beta
+   `dockerbeta.ahorabh.com`, en beta). Están en
+   `app/backend/AhoraCenit.Api/Data/Seed/products.json` y solo se crean si el
+   catálogo está vacío. SAT trabaja sobre la base de datos del ERP: al
+   instalarlo se indica su cadena de conexión (o se deja la de ejemplo y la
+   pide la aplicación al arrancar).
 3. Los clientes se registran en el portal, eligen un producto y pulsan
    **Instalar**: se despliega en `https://<nombre>.tudominio.com`.
 
