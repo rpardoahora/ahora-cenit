@@ -291,15 +291,14 @@ static async Task SeedAdminAsync(AppDbContext db, AdminSeedOptions adminSeed)
 }
 
 /// <summary>
-/// Catálogo inicial de una instalación nueva: los productos de Data/Seed/products.json (los de Ahora que se
-/// pueden desplegar con imágenes publicadas, con los logos en /products/). Solo si aún no hay ninguno.
+/// Catálogo de Ahora: los productos de Data/Seed/products.json (los que se pueden desplegar con imágenes
+/// publicadas, con los logos en /products/). Cada uno se da de alta una sola vez, también en las
+/// actualizaciones: los ya sembrados se recuerdan en AppSettings para no resucitar los que un admin borre,
+/// y no se duplica uno que ya exista con el mismo nombre.
 /// </summary>
 static async Task SeedProductsAsync(AppDbContext db)
 {
-    if (await db.Products.AnyAsync())
-    {
-        return;
-    }
+    const string seededKey = "Products.SeededNames";
 
     var file = Path.Combine(AppContext.BaseDirectory, "Data", "Seed", "products.json");
     if (!File.Exists(file))
@@ -310,7 +309,19 @@ static async Task SeedProductsAsync(AppDbContext db)
     var jsonOptions = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
     var seeds = System.Text.Json.JsonSerializer.Deserialize<List<SeedProduct>>(await File.ReadAllTextAsync(file), jsonOptions) ?? [];
 
-    db.Products.AddRange(seeds.Select(seed => new Product
+    var setting = await db.AppSettings.FirstOrDefaultAsync(s => s.Key == seededKey);
+    var seeded = new HashSet<string>(
+        setting is null ? [] : System.Text.Json.JsonSerializer.Deserialize<List<string>>(setting.Value) ?? [],
+        StringComparer.OrdinalIgnoreCase);
+    var existing = new HashSet<string>(await db.Products.Select(p => p.Name).ToListAsync(), StringComparer.OrdinalIgnoreCase);
+
+    var pending = seeds.Where(seed => !seeded.Contains(seed.Name)).ToList();
+    if (pending.Count == 0)
+    {
+        return;
+    }
+
+    db.Products.AddRange(pending.Where(seed => !existing.Contains(seed.Name)).Select(seed => new Product
     {
         Name = seed.Name,
         Description = seed.Description,
@@ -319,6 +330,18 @@ static async Task SeedProductsAsync(AppDbContext db)
         ComposeTemplate = seed.ComposeTemplate,
         EnvVarsSchemaJson = System.Text.Json.JsonSerializer.Serialize(seed.EnvVarsSchema, jsonOptions)
     }));
+
+    seeded.UnionWith(pending.Select(seed => seed.Name));
+    var value = System.Text.Json.JsonSerializer.Serialize(seeded.Order(StringComparer.OrdinalIgnoreCase));
+    if (setting is null)
+    {
+        db.AppSettings.Add(new AppSetting { Key = seededKey, Value = value });
+    }
+    else
+    {
+        setting.Value = value;
+        setting.UpdatedAt = DateTime.UtcNow;
+    }
     await db.SaveChangesAsync();
 }
 
