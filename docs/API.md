@@ -13,7 +13,7 @@ como `CENIT_TOKEN`. Es el mismo token para todo:
 |---|---|
 | **API del portal** | Cabecera `Authorization: Bearer <CENIT_TOKEN>` (o `X-Api-Key: <CENIT_TOKEN>`) |
 | **Docker Registry** | `docker login <registry> -u cenit-admin -p <CENIT_TOKEN>` |
-| **NuGet** | Usuario `cenit-admin` y contraseña `<CENIT_TOKEN>` en el feed (ver la [guía](GUIA.md#11-repositorio-nuget-feeds-public-e-internal)) |
+| **NuGet** | Usuario `cenit-admin` y contraseña `<CENIT_TOKEN>` en el feed (ver la [guía](GUIA.md#11-repositorio-nuget-privado-bagetter)) |
 
 Con el token se actúa como **administrador** del portal (en nombre del
 usuario administrador, y queda auditado como `via=api-token`).
@@ -21,7 +21,7 @@ usuario administrador, y queda auditado como `via=api-token`).
 > 🔒 Trátalo como una contraseña de administrador. Si se filtra, bórralo:
 > quita la línea `CENIT_TOKEN` de `infra/.env` y ejecuta `--update`. El
 > instalador genera uno nuevo y lo actualiza en el portal, en el registry y en
-> repositorio NuGet (usuario `cenit-admin` y API key).
+> el repositorio NuGet (usuario `cenit-admin` y API key).
 
 **URL base:** `https://cloud.<tu-dominio>/api` (en local:
 `http://cloud.localhost/api`, con `:<puerto>` si no es el 80).

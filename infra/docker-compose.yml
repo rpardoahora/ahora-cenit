@@ -219,7 +219,8 @@ services:
   # Repositorio NuGet privado (BaGetter). Un único feed: http(s)://nuget.DOMAIN/v3/index.json
   #   - Leer: usuario y contraseña (cenit-admin / CENIT_TOKEN, cenit-apps / NUGET_READ_TOKEN
   #     de solo lectura para las aplicaciones, admin / ADMIN_PASSWORD).
-  #   - Subir y borrar: API key = CENIT_TOKEN (dotnet nuget push -k).
+  #   - Subir y borrar: API key = CENIT_TOKEN (dotnet nuget push -k), con el origen registrado
+  #     con usuario y contraseña: push lee antes /v3/index.json y sin credenciales da 401.
   #   - Borrar elimina el paquete de verdad (HardDelete); al subir, la política de retención
   #     borra las versiones antiguas que sobren (NUGET_RETENTION_* en .env).
   #   - Su web pide el login de administración (Traefik); el feed lo autentica BaGetter.

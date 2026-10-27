@@ -38,7 +38,7 @@ certificados HTTPS se piden solos.
 8. [Ya está instalado: primeros pasos](#8-ya-está-instalado-primeros-pasos)
 9. [Actualizar, ver el estado y copias de seguridad](#9-actualizar-ver-el-estado-y-copias-de-seguridad)
 10. [Subir tus propias imágenes al registry](#10-subir-tus-propias-imágenes-al-registry)
-11. [Repositorio NuGet: feeds public e internal](#11-repositorio-nuget-feeds-public-e-internal)
+11. [Repositorio NuGet privado (BaGetter)](#11-repositorio-nuget-privado-bagetter)
 12. [Crear plantillas de producto](#12-crear-plantillas-de-producto)
 13. [Cambiar la configuración](#13-cambiar-la-configuración)
 14. [Problemas frecuentes](#14-problemas-frecuentes)
@@ -234,7 +234,7 @@ Usuarios de cada panel:
 | Traefik | `admin` | la de administrador |
 | Registry (`docker login`) | `admin` | la de administrador |
 | OpenObserve | tu email | la de administrador |
-| Repositorio NuGet (BaGetter) | `cenit-admin` (o `admin`) | `CENIT_TOKEN` (o la de administrador); subir: `CENIT_TOKEN` como API key |
+| Repositorio NuGet (BaGetter) | `cenit-admin` (o `admin`) | `CENIT_TOKEN` (o la de administrador); para subir, además, `CENIT_TOKEN` como API key |
 
 > 🔒 En producción, la primera vez que abras cada subdominio puede tardar
 > unos segundos en tener el candado HTTPS: Let's Encrypt emite el
@@ -310,7 +310,7 @@ privado**:
 |---|---|
 | Dirección del feed | `https://nuget.midominio.com/v3/index.json` (en **modo local**, `http://localhost:5100/v3/index.json`) |
 | Leer (restaurar paquetes) | Usuario y contraseña. Sin credenciales responde 401. |
-| Subir y borrar | **API key** = `CENIT_TOKEN` (`-k` en `dotnet nuget push/delete`). |
+| Subir y borrar | **API key** = `CENIT_TOKEN` (`-k` en `dotnet nuget push/delete`), **y además** el origen registrado con usuario y contraseña (ver [Publicar un paquete](#publicar-un-paquete)). |
 | Borrar | **Borrado definitivo** (*hard delete*): se elimina el paquete y su fichero, no se "oculta". |
 | Limpieza automática | Al subir una versión se borran las antiguas que sobren según la **política de retención**. |
 | Web (lista de paquetes) | `https://nuget.midominio.com`, con el login de administración (`admin` o `cenit-admin`). |
@@ -323,19 +323,26 @@ privado**:
 | `cenit-apps` | `NUGET_READ_TOKEN` | **Solo lectura**: lo reciben las aplicaciones desplegadas (instalación desatendida). |
 | `admin` | La contraseña de administrador | Leer el feed y entrar en la web. |
 
-Para subir no hay usuario: se usa la API key (`CENIT_TOKEN`).
+Subir y borrar no tienen usuario propio: se autorizan con la API key
+(`CENIT_TOKEN`), pero `dotnet` necesita también leer el feed con uno de estos
+usuarios.
 
 ### Publicar un paquete
 
+Antes de subir, `dotnet` lee el índice del feed (`/v3/index.json`), y leerlo
+pide usuario y contraseña: con solo la API key responde **401**. Por eso hay que
+registrar el origen con credenciales (una vez) y subir indicando su nombre:
+
 ```bash
+dotnet nuget add source https://nuget.midominio.com/v3/index.json -n cenit -u cenit-admin -p <CENIT_TOKEN> --store-password-in-clear-text
 dotnet pack -c Release
-dotnet nuget push bin/Release/MiLibreria.1.0.0.nupkg -s https://nuget.midominio.com/v3/index.json -k <CENIT_TOKEN>
+dotnet nuget push bin/Release/MiLibreria.1.0.0.nupkg -s cenit -k <CENIT_TOKEN>
 ```
 
 Borrar una versión (definitivo):
 
 ```bash
-dotnet nuget delete MiLibreria 1.0.0 -s https://nuget.midominio.com/v3/index.json -k <CENIT_TOKEN> --non-interactive
+dotnet nuget delete MiLibreria 1.0.0 -s cenit -k <CENIT_TOKEN> --non-interactive
 ```
 
 No se puede volver a subir una versión que ya existe (`AllowPackageOverwrites`
@@ -364,8 +371,9 @@ O en un `nuget.config` junto a la solución:
 ```
 
 > 💡 En **modo local** el feed va por HTTP y `dotnet` lo bloquea por defecto:
-> añade `allowInsecureConnections="true"` a la línea `<add key=... />` del
-> feed, o `--allow-insecure-connections` en `dotnet nuget push`.
+> añade `--allow-insecure-connections` a `dotnet nuget add source`, o
+> `allowInsecureConnections="true"` a la línea `<add key=... />` del feed en
+> el `nuget.config`. `push` y `delete` con `-s cenit` lo toman del origen.
 
 ### Política de retención
 

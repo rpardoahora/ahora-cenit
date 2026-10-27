@@ -911,6 +911,8 @@ print_summary() {
   local email pass token reg nu; email="$(cfg ADMIN_EMAIL)"; pass="$(cfg ADMIN_PASSWORD)"
   token="$(cfg CENIT_TOKEN)"; reg="$(cfg REGISTRY_HOST)"; nu="$(cfg NUGET_PUBLIC_URL)"
   local F=$'\x1f'
+  local insecure=""
+  [[ "$nu" == http://* ]] && insecure=" --allow-insecure-connections"
   section "Todo listo"
   echo
   print_table \
@@ -932,9 +934,10 @@ print_summary() {
   cat <<EOF
 
   ${C_BOLD}Repositorio NuGet${C_RESET} (BaGetter, feed privado; web: ${C_CYAN}$s://nuget.$d$p${C_RESET} con el login de administración)
-     leer  : dotnet nuget add source ${nu}v3/index.json -n cenit -u $PLATFORM_USER -p <CENIT_TOKEN> --store-password-in-clear-text
-     subir : dotnet nuget push <paquete>.nupkg -s ${nu}v3/index.json -k <CENIT_TOKEN>
-     borrar: dotnet nuget delete <id> <versión> -s ${nu}v3/index.json -k <CENIT_TOKEN>   (borrado definitivo)
+     origen: dotnet nuget add source ${nu}v3/index.json -n cenit -u $PLATFORM_USER -p <CENIT_TOKEN> --store-password-in-clear-text$insecure
+             (una vez; también para subir: sin usuario el feed responde 401)
+     subir : dotnet nuget push <paquete>.nupkg -s cenit -k <CENIT_TOKEN>
+     borrar: dotnet nuget delete <id> <versión> -s cenit -k <CENIT_TOKEN> --non-interactive   (borrado definitivo)
 
   ${C_BOLD}Token de plataforma${C_RESET} (CENIT_TOKEN, usuario $PLATFORM_USER)
      API    : curl -H "Authorization: Bearer $token" $s://cloud.$d$p/api/products

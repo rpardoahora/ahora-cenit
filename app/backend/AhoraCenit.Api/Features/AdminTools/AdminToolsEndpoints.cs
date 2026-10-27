@@ -45,7 +45,7 @@ public static class AdminToolsEndpoints
             new AdminToolResponse(
                 "nuget",
                 "Repositorio NuGet",
-                "BaGetter: feed NuGet privado. Leer con usuario y contraseña (cenit-admin, cenit-apps o admin); subir con el token de plataforma como API key. La web pide el login de administración.",
+                "BaGetter: feed NuGet privado. Leer con usuario y contraseña (cenit-admin, cenit-apps o admin); subir con el token de plataforma como API key, desde un origen registrado con usuario (sin él el feed responde 401). La web pide el login de administración.",
                 Resolve(tools.NuGetUrl, "nuget", baseDomain, publicBaseUrl),
                 string.IsNullOrWhiteSpace(tools.NuGetFeedUrl)
                     ? Resolve(tools.NuGetUrl, "nuget", baseDomain, publicBaseUrl) + "/v3/index.json"

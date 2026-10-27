@@ -983,9 +983,11 @@ function Show-Summary {
     )
     Write-Host ""
     Write-Host "  Repositorio NuGet (BaGetter, feed privado; web: ${s}://nuget.$d$p con el login de administracion)" -ForegroundColor White
-    Write-Host "     leer  : dotnet nuget add source ${nu}v3/index.json -n cenit -u $PlatformUser -p <CENIT_TOKEN> --store-password-in-clear-text"
-    Write-Host "     subir : dotnet nuget push <paquete>.nupkg -s ${nu}v3/index.json -k <CENIT_TOKEN>"
-    Write-Host "     borrar: dotnet nuget delete <id> <version> -s ${nu}v3/index.json -k <CENIT_TOKEN>   (borrado definitivo)"
+    $insecure = ''; if ($nu -like 'http://*') { $insecure = ' --allow-insecure-connections' }
+    Write-Host "     origen: dotnet nuget add source ${nu}v3/index.json -n cenit -u $PlatformUser -p <CENIT_TOKEN> --store-password-in-clear-text$insecure"
+    Write-Host "             (una vez; tambien para subir: sin usuario el feed responde 401)"
+    Write-Host "     subir : dotnet nuget push <paquete>.nupkg -s cenit -k <CENIT_TOKEN>"
+    Write-Host "     borrar: dotnet nuget delete <id> <version> -s cenit -k <CENIT_TOKEN> --non-interactive   (borrado definitivo)"
     Write-Host ""
     Write-Host "  Token de plataforma (CENIT_TOKEN, usuario $PlatformUser)" -ForegroundColor White
     Write-Host "     API    : curl -H `"Authorization: Bearer $token`" ${s}://cloud.$d$p/api/products"

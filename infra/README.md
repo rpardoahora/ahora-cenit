@@ -60,7 +60,9 @@ espera a que responda `/health`):
 - **Feed privado**: `Authentication__Credentials__*` con `cenit-admin`
   (`CENIT_TOKEN`), `cenit-apps` (`NUGET_READ_TOKEN`, solo lectura, para las
   aplicaciones) y `admin` (`ADMIN_PASSWORD`). Sin credenciales, `/v3` responde 401.
-- **Subir y borrar**: `ApiKey` = `CENIT_TOKEN`.
+- **Subir y borrar**: `ApiKey` = `CENIT_TOKEN`. `dotnet nuget push/delete` lee
+  antes `/v3/index.json`, así que el origen tiene que llevar también usuario y
+  contraseña: con la URL y la API key sola responde 401.
 - **Borrado definitivo**: `PackageDeletionBehavior=HardDelete`; no se admite
   sobrescribir una versión (`AllowPackageOverwrites=false`).
 - **Retención**: `Retention__Max{Major,Minor,Patch,Prerelease}Versions` desde
@@ -68,7 +70,7 @@ espera a que responda `/health`):
   las cuatro.
 - **Web**: Traefik la protege con `cenit-auth` (htpasswd); las rutas del feed
   (`/v3`, `/api`, `/health`) van por otro router sin ese middleware porque las
-  autentica BaGetter (y `dotnet nuget push` solo manda la API key).
+  autentica BaGetter (con sus propios usuarios y la API key, no con el htpasswd).
 
 Datos (SQLite y paquetes) en el volumen `cenit_nuget_data` (`/data`).
 `BAGETTER_VERSION` en `.env` fija otra versión.
