@@ -254,7 +254,17 @@ abreviado como `.\install.ps1`).
 | `--restore <carpeta>` | Restaura una copia: `sudo ./install.sh --restore backups/20261002-101500`. **Sustituye los datos actuales.** |
 
 Opciones extra: `--yes` (no preguntar nada, útil para tareas programadas) y
-`--no-backup` (actualizar sin copia previa).
+`--no-backup` (actualizar sin copia previa). Sin terminal (`ssh host '…'`,
+cron) el instalador no puede preguntar y usa las respuestas por defecto, como
+con `--yes`.
+
+Si el `git pull` de `--update` falla, se muestra el error de git y la
+actualización **no sigue a medias** con el código antiguo: sin `--yes` pregunta
+si continuar con el código actual (por defecto no); con `--yes` o sin terminal
+se detiene con un error. Corrige la causa (por ejemplo, cambios locales en el
+repositorio) y repite `--update`, o lanza `--update --skip-git-pull` para
+actualizar sin descargar el código. El pull lo hace el propietario de la
+carpeta del repositorio, así que da igual qué usuario lance el `sudo`.
 
 Ejecutar el instalador otra vez sin opciones sobre una instalación existente
 te deja elegir entre **actualizar** o **reconfigurar** (volver a contestar

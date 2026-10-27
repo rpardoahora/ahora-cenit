@@ -118,6 +118,14 @@ fi
 REAL_USER="${SUDO_USER:-}"
 [ "$REAL_USER" = "root" ] && REAL_USER=""
 
+# Sin terminal (ssh sin -t, cron...) no se puede preguntar: se usan las
+# respuestas por defecto, igual que con --yes. /dev/tty existe aunque no haya
+# terminal, pero abrirlo falla: hay que probarlo.
+if [ "$ASSUME_YES" -eq 0 ] && ! { : </dev/tty; } 2>/dev/null; then
+  ASSUME_YES=1
+  info "No hay terminal: se usan las respuestas por defecto (como con --yes)."
+fi
+
 # ----------------------------------------------------------------------------
 # Preguntas
 # ----------------------------------------------------------------------------
@@ -1008,9 +1016,15 @@ do_update() {
   require_installed
   if [ "$SKIP_GIT_PULL" -eq 0 ] && [ -d "$SCRIPT_DIR/.git" ]; then
     section "Actualizando el código (git pull)"
-    local git_cmd=(git -C "$SCRIPT_DIR" pull --ff-only)
-    [ -n "$REAL_USER" ] && git_cmd=(sudo -u "$REAL_USER" "${git_cmd[@]}")
-    if "${git_cmd[@]}"; then
+    # El pull lo hace el propietario del repositorio: si se clonó con sudo es
+    # root, aunque --update lo lance otro usuario (git rechazaría el repositorio
+    # por "dubious ownership"), y si no, los ficheros nuevos siguen siendo suyos.
+    local owner git_out
+    owner="$(stat -c %U "$SCRIPT_DIR")"
+    local git_cmd=(git -c safe.directory="$SCRIPT_DIR" -C "$SCRIPT_DIR" pull --ff-only)
+    [ "$owner" != "$(id -un)" ] && [ "$owner" != "UNKNOWN" ] && git_cmd=(sudo -u "$owner" "${git_cmd[@]}")
+    if git_out="$("${git_cmd[@]}" 2>&1)"; then
+      [ -n "$git_out" ] && printf '%s\n' "$git_out"
       # El propio instalador puede haber cambiado: continuar con la versión nueva.
       local next=(--update --skip-git-pull)
       [ "$ASSUME_YES" -eq 1 ] && next+=(--yes)
@@ -1019,7 +1033,12 @@ do_update() {
       rm -f "$PT_BODY"
       exec bash "$SCRIPT_DIR/install.sh" "${next[@]}"
     fi
-    warn "git pull ha fallado (¿cambios locales?). Continúo con el código actual."
+    printf '%s\n' "$git_out" | sed 's/^/    /' >&2
+    warn "git pull ha fallado (el error de git está justo encima)."
+    if [ "$ASSUME_YES" -eq 1 ]; then
+      die "No se actualiza a medias con el código antiguo. Corrige el error y repite --update, o lanza --update --skip-git-pull para actualizar con el código actual."
+    fi
+    ask_yes_no "¿Continuar con el código actual (instalador y compose sin actualizar)?" n || exit 1
   fi
 
   section "Actualizando ahora-cenit"

@@ -1067,7 +1067,10 @@ function Invoke-Update {
     Confirm-Installed
     if (-not $SkipGitPull -and (Test-Path (Join-Path $ScriptRoot '.git')) -and (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-Section "Actualizando el codigo (git pull)"
-        Invoke-Native { git -C $ScriptRoot pull --ff-only }
+        # Elevado, el instalador puede correr con otro usuario que el que clonó el
+        # repositorio y git lo rechazaría por "dubious ownership": se marca como seguro.
+        $safeDir = $ScriptRoot -replace '\\', '/'
+        Invoke-Native { git -c "safe.directory=$safeDir" -C $ScriptRoot pull --ff-only }
         if ($LASTEXITCODE -eq 0) {
             # El propio instalador puede haber cambiado: continuar con la versión nueva.
             # Con "&" PowerShell ya entrecomilla cada argumento: la ruta va tal cual (con comillas
@@ -1079,7 +1082,11 @@ function Invoke-Update {
             & (Get-HostExe) @next
             exit $LASTEXITCODE
         }
-        Write-Warn "git pull ha fallado (cambios locales?). Continuo con el codigo actual."
+        Write-Warn "git pull ha fallado (el error de git esta justo encima)."
+        if ($AssumeYes) {
+            Stop-WithError "No se actualiza a medias con el codigo antiguo. Corrige el error y repite --update, o lanza --update --skip-git-pull para actualizar con el codigo actual."
+        }
+        if (-not (Read-YesNo "Continuar con el codigo actual (instalador y compose sin actualizar)?" $false)) { exit 1 }
     }
 
     Write-Section "Actualizando ahora-cenit"
